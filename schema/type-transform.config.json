@@ -1,0 +1,94 @@
+{
+  "title": "root",
+  "type": "object",
+  "properties": {
+    "types": {
+      "title": "type definitions",
+      "type": "array",
+      "items": {
+        "title": "type definition",
+        "type": "object",
+        "properties": {
+          "id": {
+            "title": "id",
+            "type": "string"
+          },
+          "original": {
+            "title": "original type",
+            "$ref": "#/$defs/java_type"
+          },
+          "transformed": {
+            "title": "transformed type",
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/java_type"
+            }
+          },
+          "from_original": {
+            "title": "original to transformed",
+            "type": "array",
+            "items": {
+              "$ref": ["#/$defs/method_id", "string"]
+            }
+          },
+          "to_original": {
+            "$ref": ["#/$defs/method_id"]
+          }
+        }
+      }
+    },
+    "method_definitions": {
+      "title": "method definitions",
+      "type": "object",
+      "properties": {
+        "id": {
+          "title": "id",
+          "type": "string"
+        },
+        "method": {
+          "$ref": "#/$defs/method_id"
+        }
+      }
+    }
+  },
+
+
+  "$defs": {
+    "method_id": {
+      "type": ["string", "object"],
+      "pattern": "([sviS] )?([a-zA-Z_$][a-zA-Z\\d_$]*\/)*([a-zA-Z_$][a-zA-Z\\d_$]*)#[a-zA-Z_$][a-zA-Z\\d_$]* \\((\\[*(L([a-zA-Z_$][a-zA-Z\\d_$]*\/)*([a-zA-Z_$][a-zA-Z\\d_$]*);|[BCDFIJSZ]))*\\)(\\[*(L([a-zA-Z_$][a-zA-Z\\d_$]*\/)*([a-zA-Z_$][a-zA-Z\\d_$]*);|[BCDFIJSZ]))",
+      "properties": {
+        "owner": {
+          "type": "string",
+          "pattern": "([a-zA-Z_$][a-zA-Z\\d_$]*\/)*([a-zA-Z_$][a-zA-Z\\d_$]*)"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "[a-zA-Z_$][a-zA-Z\\d_$]*"
+        },
+        "descriptor": {
+          "type": "string",
+          "pattern": "\\((\\[*(L([a-zA-Z_$][a-zA-Z\\d_$]*\/)*([a-zA-Z_$][a-zA-Z\\d_$]*);|[BCDFIJSZ])*)\\)(\\[*(L([a-zA-Z_$][a-zA-Z\\d_$]*\/)*([a-zA-Z_$][a-zA-Z\\d_$]*);|[BCDFIJSZ])*)"
+        },
+        "call_type": {
+          "type": "string",
+          "enum": [
+            "virtual", "static", "interface", "special"
+          ],
+          "x-intellij-case-insensitive": true
+        }
+      },
+      "required": ["owner", "name", "descriptor"]
+    },
+    "java_type": {
+      "type": "string",
+      "pattern": "\\[*(L([a-zA-Z_$][a-zA-Z\\d_$]*\\/)*([a-zA-Z_$][a-zA-Z\\d_$]*);|[BCDFIJSZ])"
+    },
+    "bytecode_factory": {
+      "type": "array",
+      "items": {
+        "type": ["string", "object"]
+      }
+    }
+  }
+}
