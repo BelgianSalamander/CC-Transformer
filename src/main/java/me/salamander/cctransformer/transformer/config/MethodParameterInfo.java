@@ -2,7 +2,9 @@ package me.salamander.cctransformer.transformer.config;
 
 import me.salamander.cctransformer.bytecodegen.BytecodeFactory;
 import me.salamander.cctransformer.transformer.analysis.TransformSubtype;
+import me.salamander.cctransformer.transformer.analysis.TransformTrackingValue;
 import me.salamander.cctransformer.util.MethodID;
+import org.jetbrains.annotations.NotNull;
 import org.objectweb.asm.Type;
 
 import java.lang.reflect.Parameter;
@@ -13,29 +15,21 @@ public class MethodParameterInfo{
     private final TransformSubtype returnType;
     private final TransformSubtype[] parameterTypes;
     private final MethodTransformChecker transformCondition;
-    private final BytecodeFactory[] expansion;
+    private final MethodReplacement replacement;
 
-    public MethodParameterInfo(MethodID method, TransformSubtype returnType, TransformSubtype[] parameterTypes, MethodTransformChecker.Minimum[] minimums, BytecodeFactory[] expansion) {
+    public MethodParameterInfo(MethodID method, @NotNull TransformSubtype returnType, @NotNull TransformSubtype[] parameterTypes, MethodTransformChecker.Minimum[] minimums, MethodReplacement replacement) {
         this.method = method;
         this.returnType = returnType;
         this.parameterTypes = parameterTypes;
         this.transformCondition = new MethodTransformChecker(this, minimums);
-        this.expansion = expansion;
-    }
-
-    public MethodParameterInfo(MethodID method, TransformSubtype returnType, TransformSubtype[] parameterTypes, MethodTransformChecker.Minimum[] minimums) {
-        this.method = method;
-        this.returnType = returnType;
-        this.parameterTypes = parameterTypes;
-        this.transformCondition = new MethodTransformChecker(this, minimums);
-        this.expansion = null;
+        this.replacement = replacement;
     }
 
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();
 
-        if(returnType == null){
+        if(returnType.getTransformType() == null){
             sb.append(getOnlyName(method.getDescriptor().getReturnType()));
         }else{
             sb.append('[');
@@ -89,7 +83,41 @@ public class MethodParameterInfo{
         return transformCondition;
     }
 
-    public BytecodeFactory[] getExpansion() {
-        return expansion;
+    public MethodReplacement getReplacement() {
+        return replacement;
+    }
+
+    public static String getNewDesc(TransformSubtype returnType, TransformSubtype[] parameterTypes, String originalDesc){
+        Type[] types = Type.getArgumentTypes(originalDesc);
+        StringBuilder sb = new StringBuilder("(");
+        for(int i = 0; i < parameterTypes.length; i++){
+            if(parameterTypes[i] != null && parameterTypes[i].getTransformType() != null){
+                for(Type type : parameterTypes[i].transformedTypes(Type.VOID_TYPE /*This doesn't matter because we know it won't be used because getTransformType() != null*/)){
+                    sb.append(type.getDescriptor());
+                }
+            }else{
+                sb.append(types[i].getDescriptor());
+            }
+        }
+        sb.append(")");
+        if(returnType != null && returnType.getTransformType() != null){
+            if(returnType.transformedTypes(Type.VOID_TYPE).size() != 1){
+                throw new IllegalArgumentException("Return type must have exactly one transform type");
+            }
+            sb.append(returnType.transformedTypes(Type.VOID_TYPE).get(0).getDescriptor());
+        }else{
+            sb.append(Type.getReturnType(originalDesc).getDescriptor());
+        }
+        return sb.toString();
+    }
+
+    public static String getNewDesc(TransformTrackingValue returnValue, TransformTrackingValue[] parameters, String originalDesc){
+        TransformSubtype returnType = returnValue.getTransform();
+        TransformSubtype[] parameterTypes = new TransformSubtype[parameters.length];
+        for(int i = 0; i < parameters.length; i++){
+            parameterTypes[i] = parameters[i].getTransform();
+        }
+
+        return getNewDesc(returnType, parameterTypes, originalDesc);
     }
 }

@@ -296,7 +296,7 @@ public class Int3List implements AutoCloseable{
 
     @Override
     @SuppressWarnings("deprecation")
-    public void finalize(){
+    protected void finalize(){
         close();
     }
 

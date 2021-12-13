@@ -25,6 +25,15 @@ public class MethodID implements Ancestralizable<MethodID>{
 
     }
 
+    public static MethodID from(MethodInsnNode methodCall) {
+        Type owner = Type.getObjectType(methodCall.owner);
+        Type descriptor = Type.getMethodType(methodCall.desc);
+        String name = methodCall.name;
+        CallType callType = CallType.fromOpcode(methodCall.getOpcode());
+
+        return new MethodID(owner, name, descriptor, callType);
+    }
+
     public Type getOwner() {
         return owner;
     }
@@ -71,6 +80,31 @@ public class MethodID implements Ancestralizable<MethodID>{
     @Override
     public boolean equalsWithoutType(MethodID other) {
         return Objects.equals(name, other.name) && Objects.equals(descriptor, other.descriptor);
+    }
+
+    @Override
+    public String toString() {
+        String ownerName = ASMUtil.onlyClassName(owner.getClassName());
+
+        String returnTypeName = ASMUtil.onlyClassName(descriptor.getReturnType().getClassName());
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(returnTypeName).append(" ");
+        sb.append(ownerName).append(".").append(name).append("(");
+        int i = 0;
+        for (Type argType : descriptor.getArgumentTypes()) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(ASMUtil.onlyClassName(argType.getClassName()));
+            i++;
+        }
+        sb.append(")");
+        return sb.toString();
+    }
+
+    public boolean isStatic() {
+        return callType == CallType.STATIC;
     }
 
     public enum CallType {

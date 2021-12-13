@@ -4,9 +4,13 @@ import me.salamander.cctransformer.bytecodegen.BytecodeFactory;
 import me.salamander.cctransformer.transformer.analysis.TransformSubtype;
 import me.salamander.cctransformer.util.ASMUtil;
 import me.salamander.cctransformer.util.MethodID;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.MethodInsnNode;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 public class TransformType {
@@ -22,7 +26,13 @@ public class TransformType {
     private final Type originalConsumerType;
     private final Type transformedConsumerType;
 
-    public TransformType(String id, Type from, Type[] to, MethodID[] fromOriginal, MethodID toOriginal, Type originalPredicateType, Type transformedPredicateType, Type originalConsumerType, Type transformedConsumerType) {
+    private final String[] postfix;
+
+    private final Map<Object, BytecodeFactory[]> constantReplacements;
+
+    private final int transformedSize;
+
+    public TransformType(String id, Type from, Type[] to, MethodID[] fromOriginal, MethodID toOriginal, Type originalPredicateType, Type transformedPredicateType, Type originalConsumerType, Type transformedConsumerType, String[] postfix, Map<Object, BytecodeFactory[]> constantReplacements) {
         this.id = id;
         this.from = from;
         this.to = to;
@@ -32,6 +42,14 @@ public class TransformType {
         this.transformedPredicateType = transformedPredicateType;
         this.originalConsumerType = originalConsumerType;
         this.transformedConsumerType = transformedConsumerType;
+        this.constantReplacements = constantReplacements;
+
+        int size = 0;
+        for(Type t : to) {
+            size += t.getSize();
+        }
+        this.transformedSize = size;
+        this.postfix = postfix;
     }
 
     @Override
@@ -52,9 +70,21 @@ public class TransformType {
 
     public void addParameterInfoTo(Map<MethodID, MethodParameterInfo> parameterInfo) {
         if(fromOriginal != null) {
+            int i = 0;
             for (MethodID methodID : fromOriginal) {
-                MethodParameterInfo info = new MethodParameterInfo(methodID, TransformSubtype.of(null), new TransformSubtype[]{TransformSubtype.of(this)}, null);
+                MethodReplacement methodReplacement = new MethodReplacement(
+                        new BytecodeFactory[]{
+                                InsnList::new
+                        },
+                        new List[][]{
+                                new List[]{
+                                        Collections.singletonList(i)
+                                }
+                        }
+                );
+                MethodParameterInfo info = new MethodParameterInfo(methodID, TransformSubtype.of(null), new TransformSubtype[]{TransformSubtype.of(this)}, null, methodReplacement);
                 parameterInfo.put(methodID, info);
+                i++;
             }
         }
 
@@ -68,7 +98,19 @@ public class TransformType {
             for (int i = 0; i < to.length; i++) {
                 to[i] = TransformSubtype.of(null);
             }
-            MethodParameterInfo info = new MethodParameterInfo(toOriginal, TransformSubtype.of(this), to, null, expansions);
+
+            List<Integer>[][] indices = new List[to.length][to.length];
+            for (int i = 0; i < to.length; i++) {
+                for (int j = 0; j < to.length; j++) {
+                    if(i == j){
+                        indices[i][j] = Collections.singletonList(0);
+                    }else{
+                        indices[i][j] = Collections.emptyList();
+                    }
+                }
+            }
+
+            MethodParameterInfo info = new MethodParameterInfo(toOriginal, TransformSubtype.of(this), to, null, new MethodReplacement(expansions, indices));
             parameterInfo.put(toOriginal, info);
         }
 
@@ -77,12 +119,20 @@ public class TransformType {
 
             TransformSubtype[] argTypes = new TransformSubtype[]{TransformSubtype.of(this, "predicate"), TransformSubtype.of(this)};
 
+            MethodReplacement methodReplacement = new MethodReplacement(
+                    () -> {
+                        InsnList list = new InsnList();
+                        list.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, transformedPredicateType.getInternalName(), "test", Type.getMethodDescriptor(Type.BOOLEAN_TYPE, to)));
+                        return list;
+                    }
+            );
+
             MethodTransformChecker.Minimum[] minimums = new MethodTransformChecker.Minimum[]{
                     new MethodTransformChecker.Minimum(TransformSubtype.of(null), TransformSubtype.of(this, "predicate"), TransformSubtype.of(null)),
                     new MethodTransformChecker.Minimum(TransformSubtype.of(null), TransformSubtype.of(null), TransformSubtype.of(this))
             };
 
-            MethodParameterInfo info = new MethodParameterInfo(predicateID, TransformSubtype.of(null), argTypes, minimums);
+            MethodParameterInfo info = new MethodParameterInfo(predicateID, TransformSubtype.of(null), argTypes, minimums, methodReplacement);
             parameterInfo.put(predicateID, info);
         }
 
@@ -91,12 +141,20 @@ public class TransformType {
 
             TransformSubtype[] argTypes = new TransformSubtype[]{TransformSubtype.of(this, "consumer"), TransformSubtype.of(this)};
 
+            MethodReplacement methodReplacement = new MethodReplacement(
+                    () -> {
+                        InsnList list = new InsnList();
+                        list.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, transformedConsumerType.getInternalName(), "accept", Type.getMethodDescriptor(Type.VOID_TYPE, to)));
+                        return list;
+                    }
+            );
+
             MethodTransformChecker.Minimum[] minimums = new MethodTransformChecker.Minimum[]{
                     new MethodTransformChecker.Minimum(TransformSubtype.of(null), TransformSubtype.of(this, "consumer"), TransformSubtype.of(null)),
                     new MethodTransformChecker.Minimum(TransformSubtype.of(null), TransformSubtype.of(null), TransformSubtype.of(this))
             };
 
-            MethodParameterInfo info = new MethodParameterInfo(consumerID, TransformSubtype.of(null), argTypes, minimums);
+            MethodParameterInfo info = new MethodParameterInfo(consumerID, TransformSubtype.of(null), argTypes, minimums, methodReplacement);
             parameterInfo.put(consumerID, info);
         }
     }
@@ -135,5 +193,17 @@ public class TransformType {
 
     public Type getTransformedConsumerType() {
         return transformedConsumerType;
+    }
+
+    public int getTransformedSize() {
+        return transformedSize;
+    }
+
+    public String[] getPostfix() {
+        return postfix;
+    }
+
+    public Map<Object, BytecodeFactory[]> getConstantReplacements() {
+        return constantReplacements;
     }
 }

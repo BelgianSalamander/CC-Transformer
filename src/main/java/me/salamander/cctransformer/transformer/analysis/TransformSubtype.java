@@ -101,7 +101,57 @@ public class TransformSubtype {
         return Type.NONE;
     }
 
-    enum Type {
+    public org.objectweb.asm.Type getSingleType() {
+        if(subtype == Type.NONE && transformType.getValue().getTo().length != 1){
+            throw new IllegalStateException("Cannot get single type for " + this);
+        }
+
+        org.objectweb.asm.Type baseType;
+        if(subtype == Type.NONE){
+            baseType = transformType.getValue().getTo()[0];
+        }else if(subtype == Type.CONSUMER){
+            baseType = transformType.getValue().getTransformedConsumerType();
+        }else {
+            baseType = transformType.getValue().getTransformedPredicateType();
+        }
+
+        if(arrayDimensionality == 0){
+            return baseType;
+        }else{
+            return org.objectweb.asm.Type.getType("[".repeat(arrayDimensionality) + baseType.getDescriptor());
+        }
+    }
+
+    //Does not work with array dimensionality
+    private List<org.objectweb.asm.Type> transformedTypes(){
+        List<org.objectweb.asm.Type> types = new ArrayList<>();
+        if(subtype == Type.NONE){
+            types.addAll(Arrays.asList(transformType.getValue().getTo()));
+        }else if(subtype == Type.CONSUMER){
+            types.add(transformType.getValue().getTransformedConsumerType());
+        }else {
+            types.add(transformType.getValue().getTransformedPredicateType());
+        }
+
+        return types;
+    }
+
+    public int getTransformedSize() {
+        if(subtype == Type.NONE){
+            return transformType.getValue().getTransformedSize();
+        }else{
+            return 1;
+        }
+    }
+
+    public List<org.objectweb.asm.Type> transformedTypes(org.objectweb.asm.Type type){
+        if(transformType.getValue() == null){
+            return List.of(type);
+        }
+        return transformedTypes();
+    }
+
+    public enum Type {
         NONE,
         PREDICATE,
         CONSUMER;

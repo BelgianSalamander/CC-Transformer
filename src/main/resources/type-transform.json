@@ -35,25 +35,44 @@
         "call_type": "static"
       },
 
+      "constant_replacements": [
+        {
+          "from": 9223372036854775807,
+          "to": [
+            2147483647, 2147483647, 2147483647
+          ]
+        }
+      ],
+
       "original_predicate": "java/util/function/LongPredicate",
       "transformed_predicate": "me/salamander/cctransformer/util/XYZPredicate",
 
       "original_consumer": "java/util/function/LongConsumer",
-      "transformed_consumer": "me/salamander/cctransformer/util/XYZConsumer"
+      "transformed_consumer": "me/salamander/cctransformer/util/XYZConsumer",
+
+      "postfix": ["_x", "_y", "_z"]
     },
     {
       "id": "blockpos_set",
       "original": "Lit/unimi/dsi/fastutil/longs/LongSet;",
       "transformed": [
-        "Lme/salamander/cctransformer/LinkedInt3HashSet;"
+        "Lme/salamander/cctransformer/util/LinkedInt3HashSet;"
       ]
     },
     {
       "id": "blockpos_byte_map",
       "original": "Lit/unimi/dsi/fastutil/longs/Long2ByteMap;",
       "transformed": [
-        "Lme/salamander/cctransformer/Int3UByteLinkedHashMap;"
+        "Lme/salamander/cctransformer/util/Int3UByteLinkedHashMap;"
       ]
+    },
+    {
+      "id": "blockpos_list",
+      "original": "Lit/unimi/dsi/fastutil/longs/LongList;",
+      "transformed": [
+        "Lme/salamander/cctransformer/util/Int3List;"
+      ],
+      "postfix": ["_blockpos"]
     }
   ],
   "methods": [
@@ -61,17 +80,47 @@
       "method": "v net/minecraft/class_2338#method_10063 ()J", //BlockPos.asLong
       "parameters": [null],
       "return": "blockpos",
-      "expansion": [
-        [],
-        [],
-        []
+      "replacement": [
+        [
+          {
+            "type": "INVOKEVIRTUAL",
+            "method": {
+              "owner": "net/minecraft/class_2382", //Vec3i
+              "name": "method_10263", //getX,
+              "desc": "()I",
+              "call_type": "virtual"
+            }
+          }
+        ],
+        [
+          {
+            "type": "INVOKEVIRTUAL",
+            "method": {
+              "owner": "net/minecraft/class_2382", //Vec3i
+              "name": "method_10264", //getY,
+              "desc": "()I",
+              "call_type": "virtual"
+            }
+          }
+        ],
+        [
+          {
+            "type": "INVOKEVIRTUAL",
+            "method": {
+              "owner": "net/minecraft/class_2382", //Vec3i
+              "name": "method_10260", //getZ,
+              "desc": "()I",
+              "call_type": "virtual"
+            }
+          }
+        ]
       ]
     },
     {
       "method": "s net/minecraft/class_2338#method_10060 (JLnet/minecraft/class_2350;)J", //BlockPos.offset
       "parameters": ["blockpos", null],
       "return": "blockpos",
-      "expansion": [
+      "replacement": [
         [
           {
             "type": "INVOKEVIRTUAL",
@@ -138,7 +187,7 @@
       "method": "i it/unimi/dsi/fastutil/longs/Long2ByteMap#keySet ()Lit/unimi/dsi/fastutil/longs/LongSet;",
       "parameters": ["blockpos_byte_map"],
       "return": "blockpos_set",
-      "expansion": [
+      "replacement": [
         [
           {
             "type": "INVOKEVIRTUAL",
@@ -173,6 +222,77 @@
         },
         {
           "parameters": [null, "blockpos"]
+        }
+      ]
+    },
+    {
+      "method": "v it/unimi/dsi/fastutil/longs/LongLinkedOpenHashSet#removeFirstLong ()J",
+      "parameters": [
+        "blockpos_set"
+      ],
+      "return": "blockpos",
+      "minimums": [
+        {
+          "parameters": [
+            "blockpos_set"
+          ]
+        },
+        {
+          "parameters": [
+            null
+          ],
+          "return": "blockpos"
+        }
+      ],
+      "replacement": [
+        [
+          {
+            "type": "INVOKEVIRTUAL",
+            "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#getFirstX ()I"
+          }
+        ],
+        [
+          {
+            "type": "INVOKEVIRTUAL",
+            "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#getFirstY ()I"
+          }
+        ],
+        [
+          "DUP",
+          {
+            "type": "INVOKEVIRTUAL",
+            "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#getFirstZ ()I"
+          },
+          "SWAP",
+          {
+            "type": "INVOKEVIRTUAL",
+            "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#removeFirstValue ()V"
+            //This is a little hacky, but it should always work (I think)
+          }
+        ]
+      ]
+    },
+    {
+      "method": "i it/unimi/dsi/fastutil/longs/LongList#add (J)Z",
+      "parameters": ["blockpos_list", "blockpos"],
+      "minimums": [
+        {
+          "parameters": ["blockpos_list", null]
+        },
+        {
+          "parameters": [null, "blockpos"]
+        }
+      ]
+    },
+    {
+      "method": "i it/unimi/dsi/fastutil/longs/LongList#forEach (Ljava/util/function/LongConsumer;)V",
+      "parameters": ["blockpos_list", "blockpos consumer"],
+      "minimums": [
+        {
+          "parameters": ["blockpos_list", null]
+        },
+        {
+          "parameters": [null, "blockpos consumer"]
         }
       ]
     }
@@ -213,13 +333,19 @@
             },
             "__interfaces": ["it/unimi/dsi/fastutil/longs/LongSet", "java/lang/Cloneable"]
           },
+          "it/unimi/dsi/fastutil/longs/AbstractLongCollection": {
+            "it/unimi/dsi/fastutil/longs/AbstractLongList": {
+              "it/unimi/dsi/fastutil/longs/LongArrayList": {},
+              "__interfaces": ["it/unimi/dsi/fastutil/longs/LongList", "it/unimi/dst/fastutil/longs/LongStack"]
+            },
+            "__interfaces": ["it/unimi/dsi/fastutil/longs/LongCollection"]
+          },
           "__interfaces": ["it/unimi/dsi/fastutil/longs/LongCollection"]
         },
         "__interfaces": ["java/util/Collection"]
       }
     }
   },
-
   "classes": [
     {
       "class": "net/minecraft/class_3554", //DynamicGraphMinFixedPoint

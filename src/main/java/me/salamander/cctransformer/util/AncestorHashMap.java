@@ -71,11 +71,11 @@ public class AncestorHashMap<U extends Ancestralizable<U>, T> implements Map<U, 
 
         HierarchyTree.Node[] nodes = keySet()
                 .stream()
-                .filter(val -> val.equalsWithoutType(key))
+                .filter(val -> val.equalsWithoutType(key) && get(val).equals(value))
                 .map(val -> hierarchy.getNode(val.getAssociatedType()))
                 .toArray(HierarchyTree.Node[]::new);
 
-        if(nodes.length == 0){
+        /*if(nodes.length == 0){
             return map.put(key, value);
         }else{
             //Get common ancestor. (This isn't the most efficient method (far from it), but it's the easiest to implement)
@@ -104,7 +104,7 @@ public class AncestorHashMap<U extends Ancestralizable<U>, T> implements Map<U, 
                     return v;
                 }
             }
-        }
+        }*/
 
         return map.put(key, value);
     }

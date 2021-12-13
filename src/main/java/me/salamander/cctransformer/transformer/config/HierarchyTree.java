@@ -3,6 +3,7 @@ package me.salamander.cctransformer.transformer.config;
 import org.objectweb.asm.Type;
 
 import java.io.PrintStream;
+import java.lang.reflect.Field;
 import java.util.*;
 
 public class HierarchyTree {
@@ -61,6 +62,21 @@ public class HierarchyTree {
             throw new IllegalStateException("Node not found");
         }
         node.interfaces.add(itf);
+    }
+
+    public void add(Class<?> clazz){
+        while(true){
+            Type type = Type.getType(clazz);
+            if(lookup.containsKey(type)){
+                break;
+            }
+
+            Class<?> parent = clazz.getSuperclass();
+            assert parent != null;
+
+            addNode(type, Type.getType(parent));
+            clazz = parent;
+        }
     }
 
     public static class Node{

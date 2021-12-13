@@ -20,7 +20,6 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
     private final Map<Integer, TransformType> parameterOverrides = new HashMap<>();
     private final Set<TransformTrackingValue> returnValues = new HashSet<>();
 
-    private TransformType returnType = null;
     private Map<MethodID, AnalysisResults> resultLookup = new HashMap<>();
     private Map<MethodID, List<FutureMethodBinding>> futureMethodBindings;
     private ClassNode currentClass;
@@ -40,30 +39,9 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
 
     public void reset(){
         parameterOverrides.clear();
-        returnType = null;
     }
 
     public boolean checkAndCleanUp(){
-        //Check return type
-        if(returnType == null){
-            for(TransformTrackingValue value : returnValues){
-                if(value.getTransformType() != null){
-                    returnType = value.getTransformType();
-                    break;
-                }
-            }
-        }
-
-        if(returnType != null){
-            for(TransformTrackingValue value : returnValues){
-                if(value.getTransformType() == null){
-                    value.setTransformType(returnType);
-                }else if(value.getTransformType() != returnType){
-                    return false;
-                }
-            }
-        }
-
         return true;
     }
 
@@ -455,14 +433,7 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
     @Override
     public void returnOperation(AbstractInsnNode insn, TransformTrackingValue value, TransformTrackingValue expected) throws AnalyzerException {
         if(value.getTransformType() != null){
-            if(expected.getTransformType().getTo().length == 1){
-                if(returnType == null){
-                    returnType = expected.getTransformType();
-                }else{
-                    if(returnType.getTo()[0] != expected.getTransformType().getTo()[0]){
-                        throw new AnalyzerException(insn, "Return type mismatch");
-                    }
-                }
+            if(expected.transformedTypes().size() == 1){
                 returnValues.add(value);
             }else{
                 throw new AnalyzerException(insn, "Return type is not single");
@@ -484,10 +455,6 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
     public void setLocalVarOverrides(Map<Integer, TransformType> localVarOverrides) {
         this.parameterOverrides.clear();
         this.parameterOverrides.putAll(localVarOverrides);
-    }
-
-    public TransformType getReturnType() {
-        return returnType;
     }
 
     private static void deepenFieldSource(TransformTrackingValue fieldValue, TransformTrackingValue newValue){

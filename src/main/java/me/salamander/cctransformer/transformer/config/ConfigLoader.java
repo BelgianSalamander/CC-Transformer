@@ -1,11 +1,10 @@
 package me.salamander.cctransformer.transformer.config;
 
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
+import com.google.gson.*;
+import com.google.gson.internal.LazilyParsedNumber;
 import me.salamander.cctransformer.FabricMappingResolver;
 import me.salamander.cctransformer.bytecodegen.BytecodeFactory;
+import me.salamander.cctransformer.bytecodegen.ConstantFactory;
 import me.salamander.cctransformer.bytecodegen.JSONBytecodeFactory;
 import me.salamander.cctransformer.transformer.analysis.TransformSubtype;
 import me.salamander.cctransformer.util.AncestorHashMap;
@@ -16,11 +15,11 @@ import net.fabricmc.loader.impl.launch.MappingConfiguration;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.InsnList;
 
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class ConfigLoader {
     public static Config loadConfig(InputStream is){
@@ -118,26 +117,115 @@ public class ConfigLoader {
                 }
             }
 
-            TransformSubtype returnType = null;
+            TransformSubtype returnType = TransformSubtype.of(null);
             JsonElement returnTypeJson = obj.get("return");
-            BytecodeFactory[] expansion = null;
+
             if(returnTypeJson != null){
                 if(returnTypeJson.isJsonPrimitive()) {
                     returnType = TransformSubtype.fromString(returnTypeJson.getAsString(), transformTypes);
-
-                    JsonArray expansionJson = obj.get("expansion").getAsJsonArray();
-                    if (expansionJson.size() != returnType.getTransformType().getTo().length) {
-                        System.err.println("Expansion array size does not match return type size");
-                        continue;
-                    }
-
-                    expansion = new BytecodeFactory[expansionJson.size()];
-                    for (int i = 0; i < expansionJson.size(); i++) {
-                        JsonElement exp = expansionJson.get(i);
-                        expansion[i] = new JSONBytecodeFactory(exp.getAsJsonArray(), map, methodIDMap);
-                    }
-
                 }
+            }
+
+            int expansionsNeeded = 1;
+            if(returnType != null){
+                expansionsNeeded = returnType.transformedTypes(Type.INT_TYPE /*This can be anything cause we just want the length*/).size();
+            }
+
+            List<Integer>[][] indices = new List[expansionsNeeded][params.length];
+            BytecodeFactory[] expansion = new BytecodeFactory[expansionsNeeded];
+
+            /*JsonArray expansionJson = obj.get("expansion").getAsJsonArray();
+            if (expansionJson.size() != returnType.getTransformType().getTo().length) {
+                System.err.println("Expansion array size does not match return type size");
+                continue;
+            }
+
+            expansion = new BytecodeFactory[expansionJson.size()];
+            for (int i = 0; i < expansionJson.size(); i++) {
+                JsonElement exp = expansionJson.get(i);
+                expansion[i] = new JSONBytecodeFactory(exp.getAsJsonArray(), map, methodIDMap);
+            }*/
+
+            JsonElement replacementJson = obj.get("replacement");
+            JsonArray replacementJsonArray = null;
+            if(replacementJson != null){
+                if(replacementJson.isJsonArray()){
+                    replacementJsonArray = replacementJson.getAsJsonArray();
+                    //Generate default indices
+                    for (int i = 0; i < params.length; i++) {
+                        TransformSubtype param = params[i];
+
+                        if(param == null){
+                            for (int j = 0; j < expansionsNeeded; j++) {
+                                indices[j][i] = Collections.singletonList(0);
+                            }
+                            continue;
+                        }
+
+                        List<Type> types = param.transformedTypes(Type.INT_TYPE /*This doesn't matter because we are just querying the size*/);
+                        if(types.size() != 1 && types.size() != expansionsNeeded){
+                            throw new IllegalArgumentException("Expansion size does not match parameter size");
+                        }
+
+                        if(types.size() == 1){
+                            for (int j = 0; j < expansionsNeeded; j++) {
+                                indices[j][i] = Collections.singletonList(0);
+                            }
+                        }else{
+                            for (int j = 0; j < expansionsNeeded; j++) {
+                                indices[j][i] = Collections.singletonList(j);
+                            }
+                        }
+                    }
+                }else{
+                    JsonObject replacementObject = replacementJson.getAsJsonObject();
+                    replacementJsonArray = replacementObject.get("expansion").getAsJsonArray();
+                    JsonArray indicesJson = replacementObject.get("indices").getAsJsonArray();
+                    for(int i = 0; i < indicesJson.size(); i++){
+                        JsonElement indices1 = indicesJson.get(i);
+                        if(indices1.isJsonArray()){
+                            for(int j = 0; j < indices1.getAsJsonArray().size(); j++){
+                                List<Integer> l = indices[i][j] = new ArrayList<>();
+                                JsonElement indices2 = indices1.getAsJsonArray().get(j);
+                                if(indices2.isJsonArray()){
+                                    for(JsonElement index : indices2.getAsJsonArray()){
+                                        l.add(index.getAsInt());
+                                    }
+                                }else{
+                                    l.add(indices2.getAsInt());
+                                }
+                            }
+                        }else{
+                            for (int j = 0; j < expansionsNeeded; j++) {
+                                indices[j][i] = Collections.singletonList(indices1.getAsInt());
+                            }
+                        }
+                    }
+                }
+            }
+
+            MethodReplacement mr;
+            if(replacementJsonArray == null){
+                TransformSubtype[] actualParams;
+                if(methodID.getCallType() == MethodID.CallType.STATIC){
+                    actualParams = params;
+                }else{
+                    actualParams = new TransformSubtype[params.length - 1];
+                    System.arraycopy(params, 1, actualParams, 0, actualParams.length);
+                }
+                String newDesc = MethodParameterInfo.getNewDesc(returnType, actualParams, methodID.getDescriptor().getInternalName());
+                MethodID newId = new MethodID(methodID.getOwner(), methodID.getName(), Type.getMethodType(newDesc), methodID.getCallType());
+                mr = new MethodReplacement(() -> {
+                    InsnList list = new InsnList();
+                    list.add(newId.callNode());
+                    return list;
+                });
+            }else{
+                BytecodeFactory[] factories = new BytecodeFactory[expansionsNeeded];
+                for(int i = 0; i < expansionsNeeded; i++){
+                    factories[i] = new JSONBytecodeFactory(replacementJsonArray.get(i).getAsJsonArray(), map, methodIDMap);
+                }
+                mr = new MethodReplacement(factories, indices);
             }
 
             JsonElement minimumsJson = obj.get("minimums");
@@ -172,7 +260,7 @@ public class ConfigLoader {
                 }
             }
 
-            MethodParameterInfo info = new MethodParameterInfo(methodID, returnType, params, minimums, expansion);
+            MethodParameterInfo info = new MethodParameterInfo(methodID, returnType, params, minimums, mr);
             parameterInfo.put(methodID, info);
         }
 
@@ -196,6 +284,10 @@ public class ConfigLoader {
         for(JsonElement type : typeArray){
             JsonObject obj = type.getAsJsonObject();
             String id = obj.get("id").getAsString();
+
+            if(id.contains(" ")){
+                throw new IllegalArgumentException("Transform type id cannot contain spaces");
+            }
 
             Type original = remapType(Type.getType(obj.get("original").getAsString()), map, false);
             JsonArray transformedTypesArray = obj.get("transformed").getAsJsonArray();
@@ -254,11 +346,82 @@ public class ConfigLoader {
                 transformedConsumerType = remapType(Type.getObjectType(transformedConsumerTypeJson.getAsString()), map, false);
             }
 
-            TransformType transformType = new TransformType(id, original, transformedTypes, fromOriginal, toOriginal, originalPredicateType, transformedPredicateType, originalConsumerType, transformedConsumerType);
+            String[] postfix = new String[transformedTypes.length];
+            JsonElement postfixJson = obj.get("postfix");
+            if(postfixJson != null){
+                JsonArray postfixArray = postfixJson.getAsJsonArray();
+                for(int i = 0; i < postfixArray.size(); i++){
+                    postfix[i] = postfixArray.get(i).getAsString();
+                }
+            }else if(postfix.length != 1){
+                for(int i = 0; i < postfix.length; i++){
+                    postfix[i] = "_" + id + "_" + i;
+                }
+            }else{
+                postfix[0] = "_" + id;
+            }
+
+            Map<Object, BytecodeFactory[]> constantReplacements = new HashMap<>();
+            JsonElement constantReplacementsJson = obj.get("constant_replacements");
+            if(constantReplacementsJson != null) {
+                JsonArray constantReplacementsArray = constantReplacementsJson.getAsJsonArray();
+                for (int i = 0; i < constantReplacementsArray.size(); i++) {
+                    JsonObject constantReplacementsObject = constantReplacementsArray.get(i).getAsJsonObject();
+                    JsonPrimitive constantReplacementsFrom = constantReplacementsObject.get("from").getAsJsonPrimitive();
+
+                    Object from;
+                    if(constantReplacementsFrom.isString()){
+                        from = constantReplacementsFrom.getAsString();
+                    }else {
+                        from = constantReplacementsFrom.getAsNumber();
+                        from = getNumber(from, original.getSize() == 2);
+                    }
+
+                    JsonArray toArray = constantReplacementsObject.get("to").getAsJsonArray();
+                    BytecodeFactory[] to = new BytecodeFactory[toArray.size()];
+                    for(int j = 0; j < toArray.size(); j++){
+                        JsonElement toElement = toArray.get(j);
+                        if(toElement.isJsonPrimitive()){
+                            JsonPrimitive toPrimitive = toElement.getAsJsonPrimitive();
+                            if(toPrimitive.isString()){
+                                to[j] = new ConstantFactory(toPrimitive.getAsString());
+                            }else{
+                                Number constant = toPrimitive.getAsNumber();
+                                constant = getNumber(constant, transformedTypes[j].getSize() == 2);
+                                to[j] = new ConstantFactory(constant);
+                            }
+                        }else{
+                            to[j] = new JSONBytecodeFactory(toElement.getAsJsonArray(), map, methodIDMap);
+                        }
+                    }
+
+                    constantReplacements.put(from, to);
+                }
+            }
+
+
+            TransformType transformType = new TransformType(id, original, transformedTypes, fromOriginal, toOriginal, originalPredicateType, transformedPredicateType, originalConsumerType, transformedConsumerType, postfix, constantReplacements);
             types.put(id, transformType);
         }
 
         return types;
+    }
+
+    private static Number getNumber(Object from, boolean doubleSize){
+        String s = from.toString();
+        if(doubleSize){
+            if(s.contains(".")){
+                return Double.parseDouble(s);
+            }else{
+                return Long.parseLong(s);
+            }
+        }else {
+            if(s.contains(".")){
+                return Float.parseFloat(s);
+            }else{
+                return Integer.parseInt(s);
+            }
+        }
     }
 
     private static Map<String, MethodID> loadMethodDefinitions(JsonElement methodMap, MappingResolver map) {
@@ -389,7 +552,7 @@ public class ConfigLoader {
     private static MappingResolver getMapper() {
         try {
             return FabricLoader.getInstance().getMappingResolver();
-        }catch (NullPointerException e){
+        } catch (NullPointerException e) {
             e.printStackTrace();
             System.err.println("Not running fabric! Creating mappings!");
             MappingConfiguration mappingConfig = new MappingConfiguration();

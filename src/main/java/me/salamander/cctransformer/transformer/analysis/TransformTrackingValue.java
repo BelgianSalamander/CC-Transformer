@@ -2,16 +2,15 @@ package me.salamander.cctransformer.transformer.analysis;
 
 import me.salamander.cctransformer.transformer.config.MethodParameterInfo;
 import me.salamander.cctransformer.transformer.config.TransformType;
+import me.salamander.cctransformer.util.ASMUtil;
 import me.salamander.cctransformer.util.AncestorHashMap;
+import me.salamander.cctransformer.util.CombinedSet;
 import me.salamander.cctransformer.util.FieldID;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.analysis.Value;
 
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 
 public class TransformTrackingValue implements Value {
     private final Type type;
@@ -108,7 +107,7 @@ public class TransformTrackingValue implements Value {
         }
 
         Type rawType = this.transform.getRawType(transformType);
-        int dimension = this.type.getDimensions() - rawType.getDimensions();
+        int dimension = ASMUtil.getDimensions(this.type) - ASMUtil.getDimensions(rawType);
         this.transform.setArrayDimensionality(dimension);
 
         this.transform.getTransformTypePtr().setValue(transformType);
@@ -116,7 +115,6 @@ public class TransformTrackingValue implements Value {
 
     public void updateType(TransformType oldType, TransformType newType) {
         //Set appropriate array dimensions
-
         Set<TransformTrackingValue> copy = new HashSet<>(valuesWithSameType);
         valuesWithSameType.clear(); //To prevent infinite recursion
 
@@ -206,6 +204,11 @@ public class TransformTrackingValue implements Value {
     }
 
     public static void setSameType(TransformTrackingValue first, TransformTrackingValue second){
+        if(first.type == null || second.type == null){
+            System.err.println("WARNING: Attempted to set same type on null type");
+            return;
+        }
+
         if(first.getTransformType() == null && second.getTransformType() == null){
             first.valuesWithSameType.add(second);
             second.valuesWithSameType.add(first);
@@ -256,5 +259,17 @@ public class TransformTrackingValue implements Value {
 
     public TransformSubtype getTransform() {
         return transform;
+    }
+
+    public int getTransformedSize() {
+        if(transform.getTransformType() == null){
+            return getSize();
+        }else{
+            return transform.getTransformedSize();
+        }
+    }
+
+    public List<Type> transformedTypes(){
+        return this.transform.transformedTypes(this.type);
     }
 }
