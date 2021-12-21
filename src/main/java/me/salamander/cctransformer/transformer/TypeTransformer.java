@@ -19,27 +19,62 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Supplier;
 
+/**
+ * This class is responsible for transforming the methods and fields of a single class according to the configuration. See {@link ConfigLoader}
+ * <br><br>
+ * <b>Definitions:</b>
+ * <ul>Emitter: Any instruction that pushes one or more values onto the stack</ul>
+ * <ul>Consumer: Any instruction that pops one or more values from the stack</ul>
+ */
 public class TypeTransformer {
+    //Directory where the transformed classes will be written to for debugging purposes
     private static final Path OUT_DIR = Path.of("run", "transformed");
+    //Postfix that gets appended to some names to prevent conflicts
     public static final String MIX = "$$cc_transformed";
+    //A value that should be passed to transformed constructors. Any other value will cause an error
     public static final int MAGIC = 0xDEADBEEF;
+    //When safety is enabled, if a long-pos method is called for a 3-int object a warning will be created. This keeps track of all warnings.
     private static final Set<String> warnings = new HashSet<>();
 
+    //The global configuration loaded by ConfigLoader
     private final Config config;
+    //The original class node
     private final ClassNode classNode;
+    //When the class is being duplicated this is the new class.
     private final ClassNode newClassNode;
+    //Stores all the analysis results per method
     private final Map<MethodID, AnalysisResults> analysisResults = new HashMap<>();
+    //Keeps track of bindings to un-analyzed methods
     private final Map<MethodID, List<FutureMethodBinding>> futureMethodBindings = new HashMap<>();
+    //Stores values for each field in the class. These can be bound (set same type) like any other values and allows
+    //for easy tracking of the transform-type of a field
     private final AncestorHashMap<FieldID, TransformTrackingValue> fieldPseudoValues;
+    //Per-class configuration
     private final ClassTransformInfo transformInfo;
+    //The field ID (owner, name, desc) of a field which stores whether an instance was created with a transform constructor and has transformed fields
     private final FieldID isTransformedField;
+    //Whether safety checks/dispatches/warnings should be inserted into the code.
     private final boolean addSafety;
+    //Stores the lambdaTransformers that need to be added
     private final Set<MethodNode> lambdaTransformers = new HashSet<>();
+    //Stores any other methods that need to be added. There really isn't much of a reason for these two to be separate.
     private final Set<MethodNode> newMethods = new HashSet<>();
 
+    //If the class is being duplicated, this is the name of the new class.
     private final String renameTo;
 
+    /**
+     * Constructs a new TypeTransformer for a given class.
+     * @param config The global configuration loaded by ConfigLoader
+     * @param classNode The original class node
+     * @param duplicateClass Whether the class should be duplicated
+     * @param addSafety Whether safety checks/dispatches/warnings should be inserted into the code.
+     */
     public TypeTransformer(Config config, ClassNode classNode, boolean duplicateClass, boolean addSafety) {
+        if(duplicateClass && addSafety){
+            throw new IllegalArgumentException("Cannot duplicate a class and add safety checks at the same time");
+        }
+
         this.config = config;
         this.classNode = classNode;
         this.fieldPseudoValues = new AncestorHashMap<>(config.getHierarchy());
@@ -51,26 +86,18 @@ public class TypeTransformer {
             fieldPseudoValues.put(new FieldID(Type.getObjectType(classNode.name), field.name, Type.getType(field.desc)), value);
         }
 
+        //Extract per-class config from the global config
         this.transformInfo = config.getClasses().get(Type.getObjectType(classNode.name));
 
         if(duplicateClass){
+            //Simple way of copying the class node
             this.newClassNode = new ClassNode();
 
             classNode.accept(newClassNode);
 
-            System.out.println(newClassNode.methods.size());
-
-            MethodNode methodNode = newClassNode.methods.stream().filter(m -> m.name.equals("<clinit>") && m.desc.equals("()V")).findAny().orElse(null);
-            if(methodNode == null){
-                methodNode = new MethodNode(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null);
-                newClassNode.methods.add(methodNode);
-            }
-            methodNode.instructions.clear();
-            methodNode.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-            methodNode.visitLdcInsn(newClassNode.name + " was loaded!");
-            methodNode.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
-            methodNode.visitInsn(Opcodes.RETURN);
             renameTo = newClassNode.name + "_transformed";
+
+            //Since we know that any isntance of a class will have transformed fields there is no need to add a field to check for it.
             isTransformedField = null;
         }else{
             this.newClassNode = null;
@@ -79,6 +106,7 @@ public class TypeTransformer {
             isTransformedField = new FieldID(Type.getObjectType(classNode.name), "isTransformed" + MIX, Type.BOOLEAN_TYPE);
             classNode.fields.add(isTransformedField.toNode(false, Opcodes.ACC_FINAL));
 
+            //For every constructor already in the method, add 'isTransformed = false' to it.
             for(MethodNode methodNode: classNode.methods){
                 if(methodNode.name.equals("<init>")){
                     insertAtReturn(methodNode, () -> {
@@ -93,8 +121,12 @@ public class TypeTransformer {
         }
     }
 
+    /**
+     * Should be called after all transforms have been applied.
+     */
     public void cleanUpTransform(){
         if(newClassNode != null){
+            //If the class is duplicated/renamed, this changes the name of the owner of all method/field accesses in all methods
             ASMUtil.rename(newClassNode, newClassNode.name + "_transformed");
         }
 
@@ -104,35 +136,49 @@ public class TypeTransformer {
                     c -> c.name.contains(classNode.name)
             );
 
+            //Same thing for nest members
             newClassNode.nestMembers.removeIf(
                     c -> c.contains(classNode.name)
             );
         }else{
-            for(MethodNode transformer: lambdaTransformers){
-                classNode.methods.add(transformer);
-            }
+            //Add methods that need to be added
 
-            for(MethodNode newMethod: newMethods){
-                classNode.methods.add(newMethod);
-            }
+            classNode.methods.addAll(lambdaTransformers);
+            classNode.methods.addAll(newMethods);
         }
 
         if(newClassNode == null){
+            //See documentation for makeFieldCasts
             makeFieldCasts();
         }
     }
 
+    /**
+     * Creates a copy of the method and transforms it according to the config. This method then gets added to the necessary class.
+     * The main goal of this method is to create the transform context. It then passes that on to the necessary methods. This method does not modify the method much.
+     * @param methodNode The method to transform.
+     */
     public void transformMethod(MethodNode methodNode) {
         long start = System.currentTimeMillis();
+
+        //Look up the analysis results for this method
         MethodID methodID = new MethodID(classNode.name, methodNode.name, methodNode.desc, MethodID.CallType.VIRTUAL); //Call subType doesn't matter much
         AnalysisResults results = analysisResults.get(methodID);
 
+        if(results == null){
+            throw new RuntimeException("Method " + methodID + " not analyzed");
+        }
+
+        //Create or get the new method node
         MethodNode newMethod;
 
         if(newClassNode != null) {
+            //The method is duplicated so we don't need to create a new one
             newMethod = newClassNode.methods.stream().filter(m -> m.name.equals(methodNode.name) && m.desc.equals(methodNode.desc)).findFirst().orElse(null);
         }else{
+            //Create a copy of the method
             newMethod = ASMUtil.copy(methodNode);
+            //Add it to newMethods so that it gets added later and doesn't cause a ConcurrentModificationException if iterating over the methods.
             newMethods.add(newMethod);
             markSynthetic(newMethod, "AUTO-TRANSFORMED", methodNode.name + methodNode.desc);
         }
@@ -142,7 +188,8 @@ public class TypeTransformer {
         }
 
         if((methodNode.access & Opcodes.ACC_ABSTRACT) != 0){
-            //We just need to change the descriptor
+            //If the method is abstract, we don't need to transform its code, just it's descriptor
+            //For a non-static method the first element of the results.argTypes() array is 'this' which we don't want because it isn't included in the descriptor
             TransformSubtype[] actualParameters;
             if((methodNode.access & Opcodes.ACC_STATIC) == 0){
                 actualParameters =  new TransformSubtype[results.argTypes().length - 1];
@@ -155,15 +202,29 @@ public class TypeTransformer {
             newMethod.desc = MethodParameterInfo.getNewDesc(TransformSubtype.of(null), actualParameters, methodNode.desc);
             System.out.println("Transformed method '" + methodID + "' in " + (System.currentTimeMillis() - start) + "ms");
 
-            //TODO: (Optional) Variable name tables
+            //Create the parameter name table
+            if(newMethod.parameters != null) {
+                List<ParameterNode> newParameters = new ArrayList<>();
+                for (int i = 0; i < newMethod.parameters.size(); i++) {
+                    ParameterNode parameterNode = newMethod.parameters.get(i);
+                    TransformSubtype parameterType = actualParameters[i];
 
+                    if(parameterType.getTransformType() == null || !parameterType.getSubtype().equals(TransformSubtype.SubType.NONE)){
+                        //There is no transform type for this parameter, so we don't need to change it
+                        newParameters.add(parameterNode);
+                    }else{
+                        //There is a transform type for this parameter, so we need to change it
+                        for(String suffix: parameterType.getTransformType().getPostfix()){
+                            newParameters.add(new ParameterNode(parameterNode.name + suffix, parameterNode.access));
+                        }
+                    }
+                }
+                newMethod.parameters = newParameters;
+            }
             return;
         }
 
-        if(results == null){
-            throw new RuntimeException("Method " + methodID + " not analyzed");
-        }
-
+        //See TransformContext
         AbstractInsnNode[] insns = newMethod.instructions.toArray();
         boolean[] expandedEmitter = new boolean[insns.length];
         boolean[] expandedConsumer = new boolean[insns.length];
@@ -193,7 +254,6 @@ public class TypeTransformer {
         //Analysis results come from the original method, and we need to transform the new method, so we need to be able to get the new instructions that correspond to the old ones
         Map<AbstractInsnNode, Integer> indexLookup = new HashMap<>();
 
-        //For simplicity, we add all teh instructions from both methods
         AbstractInsnNode[] oldInsns = methodNode.instructions.toArray();
 
         for(int i = 0; i < oldInsns.length; i++){
@@ -205,6 +265,8 @@ public class TypeTransformer {
 
         AbstractInsnNode[] instructions = newMethod.instructions.toArray();
         Frame<TransformTrackingValue>[] frames = results.frames();
+
+        //Resolve the method parameter infos
         MethodParameterInfo[] methodInfos = new MethodParameterInfo[insns.length];
         for(int i = 0; i < insns.length; i++){
             AbstractInsnNode insn = instructions[i];
@@ -223,9 +285,11 @@ public class TypeTransformer {
                     args[j] = frame.getStack(frame.getStackSize() - argCount + j);
                 }
 
+                //Lookup the possible method transforms
                 List<MethodParameterInfo> infos = config.getMethodParameterInfo().get(calledMethod);
 
                 if(infos != null) {
+                    //Check all possible transforms to see if any of them match
                     for (MethodParameterInfo info : infos) {
                         if (info.getTransformCondition().checkValidity(returnValue, args) == 1) {
                             methodInfos[i] = info;
@@ -236,6 +300,7 @@ public class TypeTransformer {
             }
         }
 
+        //Create context
         TransformContext context = new TransformContext(newMethod, results, instructions, expandedEmitter, expandedConsumer, new boolean[insns.length], syntheticEmitters, vars, varTypes, varCreator, indexLookup, methodInfos);
 
         detectAllRemovedEmitters(newMethod, context);
@@ -247,22 +312,24 @@ public class TypeTransformer {
         System.out.println("Transformed method '" + methodID + "' in " + (System.currentTimeMillis() - start) + "ms");
     }
 
-    private void createEmitters(TransformContext context) {
-        for (int i = 0; i < context.instructions.length; i++) {
-            if(context.removedEmitter()[i]){
-                if(context.syntheticEmitters()[i] == null){
-                    //Generate synthetic emitter
-                    //For that we need the value
-                    TransformTrackingValue value = ASMUtil.getTop(context.analysisResults().frames()[i + 1]);
-                    generateEmitter(context, value);
-                }
-            }
-        }
-    }
-
+    /**
+     * Finds all emitters that need to be removed and marks them as such.
+     * <br><br>
+     * What is a removed emitter?<br>
+     * In certain cases, multiple values will need to be used out of their normal order. For example, <code>var1</code> and <code>var2</code> both have transform-type
+     * long -> (int "x", int "y", int "z"). If some code does <code>var1 == var2</code> then the transformed code needs to do <code>var1_x == var2_x && var1_y == var2_y && var1_z == var2_z</code>.
+     * This means var1_x has to be loaded and then var2_x and then var1_y etc... This means we can't just expand the two emitters normally. That would leave the stack with
+     * [var1_x, var1_y, var1_z, var2_x, var2_y, var2_z] and comparing that would need a lot of stack magic (DUP, SWAP, etc...). So what we do is remove these emitters from the code
+     * and instead create BytecodeFactories that allow the values to be generated in any order that is needed.
+     *
+     * @param newMethod The method to transform
+     * @param context The transform context
+     */
     private void detectAllRemovedEmitters(MethodNode newMethod, TransformContext context) {
         boolean[] prev;
         Frame<TransformTrackingValue>[] frames = context.analysisResults().frames();
+
+        //This code keeps trying to find new remvoed emitters until it can't find any more.
 
         do{
             //Keep detecting new ones until we don't find any more
@@ -318,6 +385,19 @@ public class TypeTransformer {
                 }
             }
         }while(!Arrays.equals(prev, context.removedEmitter()));
+    }
+
+    private void createEmitters(TransformContext context) {
+        for (int i = 0; i < context.instructions.length; i++) {
+            if(context.removedEmitter()[i]){
+                if(context.syntheticEmitters()[i] == null){
+                    //Generate synthetic emitter
+                    //For that we need the value
+                    TransformTrackingValue value = ASMUtil.getTop(context.analysisResults().frames()[i + 1]);
+                    generateEmitter(context, value);
+                }
+            }
+        }
     }
 
     private boolean isRemoved(TransformTrackingValue value, TransformContext context){
@@ -1133,6 +1213,47 @@ public class TypeTransformer {
         }
     }
 
+    /**
+     * One of the aspects of this transformer is that if the original methods are called then the behaviour should be normal.
+     * This means that if a field's type needs to be changed then old methods would still need to use the old field type and new methods would need to use the new field type.
+     * Instead of duplicating each field, we turn the type of each of these fields into {@link Object} and cast them to their needed type. To initialize these fields to their transformed types, we
+     * create a new constructor.
+     * <br><br>
+     * <b>Example:</b>
+     * <pre>
+     *     public class A {
+     *         private final LongList list;
+     *
+     *         public A() {
+     *             Initialization...
+     *         }
+     *
+     *         public void exampleMethod() {
+     *             long pos = list.get(0);
+     *             ...
+     *         }
+     *     }
+     * </pre>
+     * Would become
+     * <pre>
+     *     public class A {
+     *         private final Object list;
+     *
+     *         public A() {
+     *             Initialization...
+     *         }
+     *
+     *         //This constructor would need to be added by makeConstructor
+     *         public A(int magic){
+     *             Transformed initialization...
+     *         }
+     *
+     *         public void exampleMethod() {
+     *             long pos = ((LongList)list).get(0);
+     *             ...
+     *         }
+     * </pre>
+     */
     private void makeFieldCasts(){
         for(var entry: fieldPseudoValues.entrySet()){
             if(entry.getValue().getTransformType() == null){
@@ -1422,6 +1543,24 @@ public class TypeTransformer {
         }
     }
 
+    /**
+     * Stores all information needed to transform a method.
+     *
+     * @param target The method that is being transformed.
+     * @param analysisResults The analysis results for this method that were generated by the analysis phase.
+     * @param instructions The instructions of {@code target} before any transformations.
+     * @param expandedEmitter For each index in {@code instructions}, the corresponding element in this array indicates whether the emitter at that index has been expanded.
+     * @param expandedConsumer For each index in {@code instructions}, the corresponding element in this array indicates whether the consumer at that index has been expanded.
+     * @param removedEmitter If, for a given index, removedEmitter is true, than the instruction at that index was removed and so its value will no longer be on the stack. To retrieve the value use the syntheticEmitters field
+     * @param syntheticEmitters Stores code generators that will replicate the value of the instruction at the given index. For a given instruction index, there is an array of BytecodeFactories.
+     *                          This is because, if the value transformed into multiple types, then each element in that array will generate code for each respective part of the type. For example if the value generated by some instruction
+     *                          has transform type <code>long -> (int "x", int "y", int "z")</code> then the first element in the array will generate code for the int "x" and the second element will generate code for the int "y" and so on.
+     * @param varLookup Stores the new index of a variable. varLookup[insnIndex][oldVarIndex] gives the new var index.
+     * @param variableManager The variable manager allows for the creation of new variables.
+     * @param indexLookup A map from instruction object to index in the instructions array. This map contains keys for the instructions of both the old and new methods. This is useful mainly because TransformTrackingValue.getSource() will return
+     *                    instructions from the old method and to manipulate the InsnList of the new method (which is a linked list) we need an element which is in that InsnList.
+     * @param methodInfos If an instruction is a method invocation, this will store information about how to transform it.
+     */
     private record TransformContext(MethodNode target, AnalysisResults analysisResults, AbstractInsnNode[] instructions, boolean[] expandedEmitter, boolean[] expandedConsumer, boolean[] removedEmitter, BytecodeFactory[][] syntheticEmitters, int[][] varLookup, TransformSubtype[][] varTypes, VariableManager variableManager, Map<AbstractInsnNode, Integer> indexLookup,
                                     MethodParameterInfo[] methodInfos){
 
