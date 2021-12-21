@@ -1,7 +1,6 @@
 package me.salamander.cctransformer.transformer.config;
 
 import com.google.gson.*;
-import com.google.gson.internal.LazilyParsedNumber;
 import me.salamander.cctransformer.FabricMappingResolver;
 import me.salamander.cctransformer.bytecodegen.BytecodeFactory;
 import me.salamander.cctransformer.bytecodegen.ConstantFactory;
@@ -33,8 +32,8 @@ public class ConfigLoader {
 
         Map<String, MethodID> methodIDMap = loadMethodDefinitions(root.get("method_definitions"), map);
         Map<String, TransformType> transformTypeMap = loadTransformTypes(root.get("types"), map, methodIDMap);
-        AncestorHashMap<MethodID, MethodParameterInfo> parameterInfo = loadMethodParameterInfo(root.get("methods"), map, methodIDMap, transformTypeMap, hierarchy);
-        Map<Type, ClassTransformInfo> classes = loadClassInfo(root.get("classes"), map, methodIDMap, transformTypeMap, parameterInfo, hierarchy);
+        AncestorHashMap<MethodID, List<MethodParameterInfo>> parameterInfo = loadMethodParameterInfo(root.get("methods"), map, methodIDMap, transformTypeMap, hierarchy);
+        Map<Type, ClassTransformInfo> classes = loadClassInfo(root.get("classes"), map, methodIDMap, transformTypeMap);
 
         for(TransformType type : transformTypeMap.values()){
             type.addParameterInfoTo(parameterInfo);
@@ -50,7 +49,7 @@ public class ConfigLoader {
         return config;
     }
 
-    private static Map<Type, ClassTransformInfo> loadClassInfo(JsonElement classes, MappingResolver map, Map<String, MethodID> methodIDMap, Map<String, TransformType> transformTypeMap, AncestorHashMap<MethodID, MethodParameterInfo> parameterInfo, HierarchyTree hierarchy) {
+    private static Map<Type, ClassTransformInfo> loadClassInfo(JsonElement classes, MappingResolver map, Map<String, MethodID> methodIDMap, Map<String, TransformType> transformTypeMap) {
         JsonArray arr = classes.getAsJsonArray();
         Map<Type, ClassTransformInfo> classInfo = new HashMap<>();
         for(JsonElement element : arr){
@@ -95,8 +94,8 @@ public class ConfigLoader {
         }
     }
 
-    private static AncestorHashMap<MethodID, MethodParameterInfo> loadMethodParameterInfo(JsonElement methods, MappingResolver map, Map<String, MethodID> methodIDMap, Map<String, TransformType> transformTypes, HierarchyTree hierarchy) {
-        final AncestorHashMap<MethodID, MethodParameterInfo> parameterInfo = new AncestorHashMap<>(hierarchy);
+    private static AncestorHashMap<MethodID, List<MethodParameterInfo>> loadMethodParameterInfo(JsonElement methods, MappingResolver map, Map<String, MethodID> methodIDMap, Map<String, TransformType> transformTypes, HierarchyTree hierarchy) {
+        final AncestorHashMap<MethodID, List<MethodParameterInfo>> parameterInfo = new AncestorHashMap<>(hierarchy);
 
         if(methods == null) return parameterInfo;
 
@@ -108,160 +107,189 @@ public class ConfigLoader {
         for(JsonElement method : methods.getAsJsonArray()){
             JsonObject obj = method.getAsJsonObject();
             MethodID methodID = loadMethodIDFromLookup(obj.get("method"), map, methodIDMap);
-            JsonArray paramsJson = obj.get("parameters").getAsJsonArray();
-            TransformSubtype[] params = new TransformSubtype[paramsJson.size()];
-            for(int i = 0; i < paramsJson.size(); i++){
-                JsonElement param = paramsJson.get(i);
-                if(param.isJsonPrimitive()){
-                    params[i] = TransformSubtype.fromString(param.getAsString(), transformTypes);
+            List<MethodParameterInfo> paramInfo = new ArrayList<>();
+            JsonArray possibilites = obj.get("possibilities").getAsJsonArray();
+            for(JsonElement possibilityElement : possibilites) {
+                JsonObject possibility = possibilityElement.getAsJsonObject();
+                JsonArray paramsJson = possibility.get("parameters").getAsJsonArray();
+                TransformSubtype[] params = new TransformSubtype[paramsJson.size()];
+                for (int i = 0; i < paramsJson.size(); i++) {
+                    JsonElement param = paramsJson.get(i);
+                    if (param.isJsonPrimitive()) {
+                        params[i] = TransformSubtype.fromString(param.getAsString(), transformTypes);
+                    }
                 }
-            }
 
-            TransformSubtype returnType = TransformSubtype.of(null);
-            JsonElement returnTypeJson = obj.get("return");
+                TransformSubtype returnType = TransformSubtype.of(null);
+                JsonElement returnTypeJson = possibility.get("return");
 
-            if(returnTypeJson != null){
-                if(returnTypeJson.isJsonPrimitive()) {
-                    returnType = TransformSubtype.fromString(returnTypeJson.getAsString(), transformTypes);
+                if (returnTypeJson != null) {
+                    if (returnTypeJson.isJsonPrimitive()) {
+                        returnType = TransformSubtype.fromString(returnTypeJson.getAsString(), transformTypes);
+                    }
                 }
-            }
 
-            int expansionsNeeded = 1;
-            if(returnType != null){
-                expansionsNeeded = returnType.transformedTypes(Type.INT_TYPE /*This can be anything cause we just want the length*/).size();
-            }
+                int expansionsNeeded = 1;
+                if (returnType != null) {
+                    expansionsNeeded = returnType.transformedTypes(Type.INT_TYPE /*This can be anything cause we just want the length*/).size();
+                }
 
-            List<Integer>[][] indices = new List[expansionsNeeded][params.length];
-            BytecodeFactory[] expansion = new BytecodeFactory[expansionsNeeded];
+                List<Integer>[][] indices = new List[expansionsNeeded][params.length];
+                BytecodeFactory[] expansion = new BytecodeFactory[expansionsNeeded];
 
-            /*JsonArray expansionJson = obj.get("expansion").getAsJsonArray();
-            if (expansionJson.size() != returnType.getTransformType().getTo().length) {
-                System.err.println("Expansion array size does not match return type size");
-                continue;
-            }
+                JsonElement replacementJson = possibility.get("replacement");
+                JsonArray replacementJsonArray = null;
+                if (replacementJson != null) {
+                    if (replacementJson.isJsonArray()) {
+                        replacementJsonArray = replacementJson.getAsJsonArray();
+                        //Generate default indices
+                        for (int i = 0; i < params.length; i++) {
+                            TransformSubtype param = params[i];
 
-            expansion = new BytecodeFactory[expansionJson.size()];
-            for (int i = 0; i < expansionJson.size(); i++) {
-                JsonElement exp = expansionJson.get(i);
-                expansion[i] = new JSONBytecodeFactory(exp.getAsJsonArray(), map, methodIDMap);
-            }*/
-
-            JsonElement replacementJson = obj.get("replacement");
-            JsonArray replacementJsonArray = null;
-            if(replacementJson != null){
-                if(replacementJson.isJsonArray()){
-                    replacementJsonArray = replacementJson.getAsJsonArray();
-                    //Generate default indices
-                    for (int i = 0; i < params.length; i++) {
-                        TransformSubtype param = params[i];
-
-                        if(param == null){
-                            for (int j = 0; j < expansionsNeeded; j++) {
-                                indices[j][i] = Collections.singletonList(0);
+                            if (param == null) {
+                                for (int j = 0; j < expansionsNeeded; j++) {
+                                    indices[j][i] = Collections.singletonList(0);
+                                }
+                                continue;
                             }
-                            continue;
-                        }
 
-                        List<Type> types = param.transformedTypes(Type.INT_TYPE /*This doesn't matter because we are just querying the size*/);
-                        if(types.size() != 1 && types.size() != expansionsNeeded){
-                            throw new IllegalArgumentException("Expansion size does not match parameter size");
-                        }
-
-                        if(types.size() == 1){
-                            for (int j = 0; j < expansionsNeeded; j++) {
-                                indices[j][i] = Collections.singletonList(0);
+                            List<Type> types = param.transformedTypes(Type.INT_TYPE /*This doesn't matter because we are just querying the size*/);
+                            if (types.size() != 1 && types.size() != expansionsNeeded) {
+                                throw new IllegalArgumentException("Expansion size does not match parameter size");
                             }
-                        }else{
-                            for (int j = 0; j < expansionsNeeded; j++) {
-                                indices[j][i] = Collections.singletonList(j);
+
+                            if (types.size() == 1) {
+                                for (int j = 0; j < expansionsNeeded; j++) {
+                                    indices[j][i] = Collections.singletonList(0);
+                                }
+                            } else {
+                                for (int j = 0; j < expansionsNeeded; j++) {
+                                    indices[j][i] = Collections.singletonList(j);
+                                }
+                            }
+                        }
+                    } else {
+                        JsonObject replacementObject = replacementJson.getAsJsonObject();
+                        replacementJsonArray = replacementObject.get("expansion").getAsJsonArray();
+                        JsonArray indicesJson = replacementObject.get("indices").getAsJsonArray();
+                        for (int i = 0; i < indicesJson.size(); i++) {
+                            JsonElement indices1 = indicesJson.get(i);
+                            if (indices1.isJsonArray()) {
+                                for (int j = 0; j < indices1.getAsJsonArray().size(); j++) {
+                                    List<Integer> l = indices[i][j] = new ArrayList<>();
+                                    JsonElement indices2 = indices1.getAsJsonArray().get(j);
+                                    if (indices2.isJsonArray()) {
+                                        for (JsonElement index : indices2.getAsJsonArray()) {
+                                            l.add(index.getAsInt());
+                                        }
+                                    } else {
+                                        l.add(indices2.getAsInt());
+                                    }
+                                }
+                            } else {
+                                for (int j = 0; j < expansionsNeeded; j++) {
+                                    indices[j][i] = Collections.singletonList(indices1.getAsInt());
+                                }
                             }
                         }
                     }
-                }else{
-                    JsonObject replacementObject = replacementJson.getAsJsonObject();
-                    replacementJsonArray = replacementObject.get("expansion").getAsJsonArray();
-                    JsonArray indicesJson = replacementObject.get("indices").getAsJsonArray();
-                    for(int i = 0; i < indicesJson.size(); i++){
-                        JsonElement indices1 = indicesJson.get(i);
-                        if(indices1.isJsonArray()){
-                            for(int j = 0; j < indices1.getAsJsonArray().size(); j++){
-                                List<Integer> l = indices[i][j] = new ArrayList<>();
-                                JsonElement indices2 = indices1.getAsJsonArray().get(j);
-                                if(indices2.isJsonArray()){
-                                    for(JsonElement index : indices2.getAsJsonArray()){
-                                        l.add(index.getAsInt());
+                }
+
+                MethodReplacement mr;
+                if (replacementJsonArray == null) {
+                    TransformSubtype[] actualParams;
+                    if (methodID.getCallType() == MethodID.CallType.STATIC) {
+                        actualParams = params;
+                    } else {
+                        actualParams = new TransformSubtype[params.length - 1];
+                        System.arraycopy(params, 1, actualParams, 0, actualParams.length);
+                    }
+                    String newDesc = MethodParameterInfo.getNewDesc(returnType, actualParams, methodID.getDescriptor().getInternalName());
+                    MethodID newId = new MethodID(methodID.getOwner(), methodID.getName(), Type.getMethodType(newDesc), methodID.getCallType());
+                    mr = new MethodReplacement(() -> {
+                        InsnList list = new InsnList();
+                        list.add(newId.callNode());
+                        return list;
+                    });
+                } else {
+                    BytecodeFactory[] factories = new BytecodeFactory[expansionsNeeded];
+                    for (int i = 0; i < expansionsNeeded; i++) {
+                        factories[i] = new JSONBytecodeFactory(replacementJsonArray.get(i).getAsJsonArray(), map, methodIDMap);
+                    }
+
+                    JsonElement finalizerJson = possibility.get("finalizer");
+                    BytecodeFactory finalizer = null;
+                    List<Integer>[] finalizerIndices = null;
+
+                    if (finalizerJson != null) {
+                        JsonArray finalizerJsonArray = finalizerJson.getAsJsonArray();
+                        finalizer = new JSONBytecodeFactory(finalizerJsonArray, map, methodIDMap);
+
+                        finalizerIndices = new List[params.length];
+                        JsonElement finalizerIndicesJson = possibility.get("finalizerIndices");
+                        if (finalizerIndicesJson != null) {
+                            JsonArray finalizerIndicesJsonArray = finalizerIndicesJson.getAsJsonArray();
+                            for (int i = 0; i < finalizerIndicesJsonArray.size(); i++) {
+                                JsonElement finalizerIndicesJsonElement = finalizerIndicesJsonArray.get(i);
+                                if (finalizerIndicesJsonElement.isJsonArray()) {
+                                    finalizerIndices[i] = new ArrayList<>();
+                                    for (JsonElement finalizerIndicesJsonElement1 : finalizerIndicesJsonElement.getAsJsonArray()) {
+                                        finalizerIndices[i].add(finalizerIndicesJsonElement1.getAsInt());
                                     }
-                                }else{
-                                    l.add(indices2.getAsInt());
+                                }else {
+                                    finalizerIndices[i] = Collections.singletonList(finalizerIndicesJsonElement.getAsInt());
                                 }
                             }
                         }else{
-                            for (int j = 0; j < expansionsNeeded; j++) {
-                                indices[j][i] = Collections.singletonList(indices1.getAsInt());
+                            for (int i = 0; i < params.length; i++) {
+                                List<Integer> l = new ArrayList<>();
+                                for (int j = 0; j < params[i].transformedTypes(Type.INT_TYPE).size(); j++) {
+                                    l.add(j);
+                                }
+                                finalizerIndices[i] = l;
                             }
                         }
                     }
-                }
-            }
 
-            MethodReplacement mr;
-            if(replacementJsonArray == null){
-                TransformSubtype[] actualParams;
-                if(methodID.getCallType() == MethodID.CallType.STATIC){
-                    actualParams = params;
-                }else{
-                    actualParams = new TransformSubtype[params.length - 1];
-                    System.arraycopy(params, 1, actualParams, 0, actualParams.length);
+                    mr = new MethodReplacement(factories, indices, finalizer, finalizerIndices);
                 }
-                String newDesc = MethodParameterInfo.getNewDesc(returnType, actualParams, methodID.getDescriptor().getInternalName());
-                MethodID newId = new MethodID(methodID.getOwner(), methodID.getName(), Type.getMethodType(newDesc), methodID.getCallType());
-                mr = new MethodReplacement(() -> {
-                    InsnList list = new InsnList();
-                    list.add(newId.callNode());
-                    return list;
-                });
-            }else{
-                BytecodeFactory[] factories = new BytecodeFactory[expansionsNeeded];
-                for(int i = 0; i < expansionsNeeded; i++){
-                    factories[i] = new JSONBytecodeFactory(replacementJsonArray.get(i).getAsJsonArray(), map, methodIDMap);
-                }
-                mr = new MethodReplacement(factories, indices);
-            }
 
-            JsonElement minimumsJson = obj.get("minimums");
-            MethodTransformChecker.Minimum[] minimums = null;
-            if(minimumsJson != null){
-                if(!minimumsJson.isJsonArray()){
-                    System.err.println("Minimums are not an array. Cannot read them");
-                    continue;
-                }
-                minimums = new MethodTransformChecker.Minimum[minimumsJson.getAsJsonArray().size()];
-                for(int i = 0; i < minimumsJson.getAsJsonArray().size(); i++){
-                    JsonObject minimum = minimumsJson.getAsJsonArray().get(i).getAsJsonObject();
-
-                    TransformSubtype minimumReturnType;
-                    if(minimum.has("return")){
-                        minimumReturnType = TransformSubtype.fromString(minimum.get("return").getAsString(), transformTypes);
-                    }else{
-                        minimumReturnType = TransformSubtype.of(null);
+                JsonElement minimumsJson = possibility.get("minimums");
+                MethodTransformChecker.Minimum[] minimums = null;
+                if (minimumsJson != null) {
+                    if (!minimumsJson.isJsonArray()) {
+                        System.err.println("Minimums are not an array. Cannot read them");
+                        continue;
                     }
+                    minimums = new MethodTransformChecker.Minimum[minimumsJson.getAsJsonArray().size()];
+                    for (int i = 0; i < minimumsJson.getAsJsonArray().size(); i++) {
+                        JsonObject minimum = minimumsJson.getAsJsonArray().get(i).getAsJsonObject();
 
-                    TransformSubtype[] argTypes = new TransformSubtype[minimum.get("parameters").getAsJsonArray().size()];
-                    for(int j = 0; j < argTypes.length; j++){
-                        JsonElement argType = minimum.get("parameters").getAsJsonArray().get(j);
-                        if(!argType.isJsonNull()){
-                            argTypes[j] = TransformSubtype.fromString(argType.getAsString(), transformTypes);
-                        }else{
-                            argTypes[j] = TransformSubtype.of(null);
+                        TransformSubtype minimumReturnType;
+                        if (minimum.has("return")) {
+                            minimumReturnType = TransformSubtype.fromString(minimum.get("return").getAsString(), transformTypes);
+                        } else {
+                            minimumReturnType = TransformSubtype.of(null);
                         }
+
+                        TransformSubtype[] argTypes = new TransformSubtype[minimum.get("parameters").getAsJsonArray().size()];
+                        for (int j = 0; j < argTypes.length; j++) {
+                            JsonElement argType = minimum.get("parameters").getAsJsonArray().get(j);
+                            if (!argType.isJsonNull()) {
+                                argTypes[j] = TransformSubtype.fromString(argType.getAsString(), transformTypes);
+                            } else {
+                                argTypes[j] = TransformSubtype.of(null);
+                            }
+                        }
+
+                        minimums[i] = new MethodTransformChecker.Minimum(minimumReturnType, argTypes);
                     }
-
-                    minimums[i] = new MethodTransformChecker.Minimum(minimumReturnType, argTypes);
                 }
-            }
 
-            MethodParameterInfo info = new MethodParameterInfo(methodID, returnType, params, minimums, mr);
-            parameterInfo.put(methodID, info);
+                MethodParameterInfo info = new MethodParameterInfo(methodID, returnType, params, minimums, mr);
+                paramInfo.add(info);
+            }
+            parameterInfo.put(methodID, paramInfo);
         }
 
         return parameterInfo;

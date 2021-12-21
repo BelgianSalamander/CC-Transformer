@@ -62,7 +62,6 @@ public class MethodTransformChecker {
     }
 
     public static record Minimum(TransformSubtype returnType, TransformSubtype... parameterTypes){
-
         public boolean isMet(TransformTrackingValue returnValue, TransformTrackingValue[] parameters) {
             if(returnType.getTransformType() != null){
                 if(!returnValue.getTransform().equals(returnType)){

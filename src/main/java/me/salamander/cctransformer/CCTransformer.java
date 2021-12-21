@@ -27,9 +27,11 @@ public class CCTransformer {
             }
         }
 
-        TypeTransformer typeTransformer = new TypeTransformer(config, testClass, true);
+        TypeTransformer typeTransformer = new TypeTransformer(config, testClass, false, true);
 
         typeTransformer.analyzeAllMethods();
+
+        typeTransformer.makeConstructor("(III)V", dynGraphConstructor());
 
         typeTransformer.transformAllMethods();
 
@@ -67,7 +69,8 @@ public class CCTransformer {
         l.add(new VarInsnNode(Opcodes.ALOAD, 0));
         l.add(new VarInsnNode(Opcodes.ILOAD, 1));
         l.add(new TypeInsnNode(Opcodes.ANEWARRAY, "me/salamander/cctransformer/util/LinkedInt3HashSet"));
-        l.add(new FieldInsnNode(Opcodes.PUTFIELD, "net/minecraft/world/level/lighting/DynamicGraphMinFixedPoint", "queues", "[Lme/salamander/cctransformer/util/LinkedInt3HashSet;"));
+        //l.add(new FieldInsnNode(Opcodes.PUTFIELD, "net/minecraft/world/level/lighting/DynamicGraphMinFixedPoint", "queues", "[Lme/salamander/cctransformer/util/LinkedInt3HashSet;"));
+        l.add(new FieldInsnNode(Opcodes.PUTFIELD, "net/minecraft/world/level/lighting/DynamicGraphMinFixedPoint", "queues", "Ljava/lang/Object;"));
         l.add(new InsnNode(Opcodes.ICONST_0));
         l.add(new VarInsnNode(Opcodes.ISTORE, 4));
         l.add(l3);
@@ -75,7 +78,9 @@ public class CCTransformer {
         l.add(new VarInsnNode(Opcodes.ILOAD, 1));
         l.add(new JumpInsnNode(Opcodes.IF_ICMPGE, l2));
         l.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        l.add(new FieldInsnNode(Opcodes.GETFIELD, "net/minecraft/world/level/lighting/DynamicGraphMinFixedPoint", "queues", "[Lme/salamander/cctransformer/util/LinkedInt3HashSet;"));
+        //l.add(new FieldInsnNode(Opcodes.GETFIELD, "net/minecraft/world/level/lighting/DynamicGraphMinFixedPoint", "queues", "[Lme/salamander/cctransformer/util/LinkedInt3HashSet;"));
+        l.add(new FieldInsnNode(Opcodes.GETFIELD, "net/minecraft/world/level/lighting/DynamicGraphMinFixedPoint", "queues", "Ljava/lang/Object;"));
+        l.add(new TypeInsnNode(Opcodes.CHECKCAST, "[Lme/salamander/cctransformer/util/LinkedInt3HashSet;"));
         l.add(new VarInsnNode(Opcodes.ILOAD, 4));
         l.add(new TypeInsnNode(Opcodes.NEW, "me/salamander/cctransformer/util/LinkedInt3HashSet"));
         l.add(new InsnNode(Opcodes.DUP));
@@ -88,7 +93,8 @@ public class CCTransformer {
         l.add(new TypeInsnNode(Opcodes.NEW, "me/salamander/cctransformer/util/Int3UByteLinkedHashMap"));
         l.add(new InsnNode(Opcodes.DUP));
         l.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "me/salamander/cctransformer/util/Int3UByteLinkedHashMap", "<init>", "()V", false));
-        l.add(new FieldInsnNode(Opcodes.PUTFIELD, "net/minecraft/world/level/lighting/DynamicGraphMinFixedPoint", "computedLevels", "Lme/salamander/cctransformer/util/Int3UByteLinkedHashMap;"));
+        //l.add(new FieldInsnNode(Opcodes.PUTFIELD, "net/minecraft/world/level/lighting/DynamicGraphMinFixedPoint", "computedLevels", "Lme/salamander/cctransformer/util/Int3UByteLinkedHashMap;"));
+        l.add(new FieldInsnNode(Opcodes.PUTFIELD, "net/minecraft/world/level/lighting/DynamicGraphMinFixedPoint", "computedLevels", "Ljava/lang/Object;"));
         l.add(new VarInsnNode(Opcodes.ALOAD, 0));
         l.add(new VarInsnNode(Opcodes.ILOAD, 1));
         l.add(new FieldInsnNode(Opcodes.PUTFIELD, "net/minecraft/world/level/lighting/DynamicGraphMinFixedPoint", "firstQueuedLevel", "I"));

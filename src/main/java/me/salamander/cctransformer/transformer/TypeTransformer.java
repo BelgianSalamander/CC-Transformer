@@ -12,15 +12,18 @@ import org.objectweb.asm.*;
 import org.objectweb.asm.tree.*;
 import org.objectweb.asm.tree.analysis.AnalyzerException;
 import org.objectweb.asm.tree.analysis.Frame;
-import org.spongepowered.asm.util.asm.ASM;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.function.Supplier;
 
 public class TypeTransformer {
     private static final Path OUT_DIR = Path.of("run", "transformed");
+    public static final String MIX = "$$cc_transformed";
+    public static final int MAGIC = 0xDEADBEEF;
+    private static final Set<String> warnings = new HashSet<>();
 
     private final Config config;
     private final ClassNode classNode;
@@ -29,13 +32,18 @@ public class TypeTransformer {
     private final Map<MethodID, List<FutureMethodBinding>> futureMethodBindings = new HashMap<>();
     private final AncestorHashMap<FieldID, TransformTrackingValue> fieldPseudoValues;
     private final ClassTransformInfo transformInfo;
+    private final FieldID isTransformedField;
+    private final boolean addSafety;
+    private final Set<MethodNode> lambdaTransformers = new HashSet<>();
+    private final Set<MethodNode> newMethods = new HashSet<>();
 
     private final String renameTo;
 
-    public TypeTransformer(Config config, ClassNode classNode, boolean duplicateClass) {
+    public TypeTransformer(Config config, ClassNode classNode, boolean duplicateClass, boolean addSafety) {
         this.config = config;
         this.classNode = classNode;
         this.fieldPseudoValues = new AncestorHashMap<>(config.getHierarchy());
+        this.addSafety = addSafety;
 
         //Create field pseudo values
         for(var field: classNode.fields){
@@ -63,9 +71,25 @@ public class TypeTransformer {
             methodNode.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
             methodNode.visitInsn(Opcodes.RETURN);
             renameTo = newClassNode.name + "_transformed";
+            isTransformedField = null;
         }else{
             this.newClassNode = null;
             renameTo = null;
+
+            isTransformedField = new FieldID(Type.getObjectType(classNode.name), "isTransformed" + MIX, Type.BOOLEAN_TYPE);
+            classNode.fields.add(isTransformedField.toNode(false, Opcodes.ACC_FINAL));
+
+            for(MethodNode methodNode: classNode.methods){
+                if(methodNode.name.equals("<init>")){
+                    insertAtReturn(methodNode, () -> {
+                       InsnList instructions = new InsnList();
+                       instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                       instructions.add(new InsnNode(Opcodes.ICONST_0));
+                       instructions.add(new FieldInsnNode(Opcodes.PUTFIELD, classNode.name, isTransformedField.name(), "Z"));
+                       return instructions;
+                    });
+                }
+            }
         }
     }
 
@@ -83,13 +107,39 @@ public class TypeTransformer {
             newClassNode.nestMembers.removeIf(
                     c -> c.contains(classNode.name)
             );
+        }else{
+            for(MethodNode transformer: lambdaTransformers){
+                classNode.methods.add(transformer);
+            }
+
+            for(MethodNode newMethod: newMethods){
+                classNode.methods.add(newMethod);
+            }
+        }
+
+        if(newClassNode == null){
+            makeFieldCasts();
         }
     }
 
     public void transformMethod(MethodNode methodNode) {
         long start = System.currentTimeMillis();
-        MethodID methodID = new MethodID(classNode.name, methodNode.name, methodNode.desc, MethodID.CallType.VIRTUAL); //Call type doesn't matter much
+        MethodID methodID = new MethodID(classNode.name, methodNode.name, methodNode.desc, MethodID.CallType.VIRTUAL); //Call subType doesn't matter much
         AnalysisResults results = analysisResults.get(methodID);
+
+        MethodNode newMethod;
+
+        if(newClassNode != null) {
+            newMethod = newClassNode.methods.stream().filter(m -> m.name.equals(methodNode.name) && m.desc.equals(methodNode.desc)).findFirst().orElse(null);
+        }else{
+            newMethod = ASMUtil.copy(methodNode);
+            newMethods.add(newMethod);
+            markSynthetic(newMethod, "AUTO-TRANSFORMED", methodNode.name + methodNode.desc);
+        }
+
+        if(newMethod == null){
+            throw new RuntimeException("Method " + methodID + " not found in new class");
+        }
 
         if((methodNode.access & Opcodes.ACC_ABSTRACT) != 0){
             //We just need to change the descriptor
@@ -102,26 +152,16 @@ public class TypeTransformer {
             }
 
             //Change descriptor
-            methodNode.desc = MethodParameterInfo.getNewDesc(TransformSubtype.of(null), actualParameters, methodNode.desc);
+            newMethod.desc = MethodParameterInfo.getNewDesc(TransformSubtype.of(null), actualParameters, methodNode.desc);
             System.out.println("Transformed method '" + methodID + "' in " + (System.currentTimeMillis() - start) + "ms");
+
+            //TODO: (Optional) Variable name tables
+
             return;
         }
 
         if(results == null){
             throw new RuntimeException("Method " + methodID + " not analyzed");
-        }
-
-        MethodNode newMethod;
-
-        if(newClassNode != null) {
-            newMethod = newClassNode.methods.stream().filter(m -> m.name.equals(methodNode.name) && m.desc.equals(methodNode.desc)).findFirst().orElse(null);
-        }else{
-            newMethod = ASMUtil.copy(methodNode);
-            classNode.methods.add(newMethod);
-        }
-
-        if(newMethod == null){
-            throw new RuntimeException("Method " + methodID + " not found in new class");
         }
 
         AbstractInsnNode[] insns = newMethod.instructions.toArray();
@@ -183,10 +223,15 @@ public class TypeTransformer {
                     args[j] = frame.getStack(frame.getStackSize() - argCount + j);
                 }
 
-                MethodParameterInfo info = config.getMethodParameterInfo().get(calledMethod);
+                List<MethodParameterInfo> infos = config.getMethodParameterInfo().get(calledMethod);
 
-                if(info != null && info.getTransformCondition().checkValidity(returnValue, args) == 1){
-                    methodInfos[i] = info;
+                if(infos != null) {
+                    for (MethodParameterInfo info : infos) {
+                        if (info.getTransformCondition().checkValidity(returnValue, args) == 1) {
+                            methodInfos[i] = info;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -250,7 +295,7 @@ public class TypeTransformer {
                         throw new RuntimeException("The two transforms should be the same");
                     }
 
-                    //If the transform has more than one type we will need to separate them so we must remove the emitter
+                    //If the transform has more than one subType we will need to separate them so we must remove the emitter
                     if(left.getTransform().transformedTypes(left.getType()).size() > 1){
                         markRemoved(left, context);
                         markRemoved(right, context);
@@ -316,14 +361,69 @@ public class TypeTransformer {
         String newDescriptor = MethodParameterInfo.getNewDesc(TransformSubtype.of(null), actualParameters, methodNode.desc);
         methodNode.desc = newDescriptor;
 
+        boolean renamed = false;
+
         if(newDescriptor.equals(oldMethod.desc) && newClassNode == null){
-            //Remove the old method
-            classNode.methods.remove(oldMethod);
+            methodNode.name += MIX;
+            renamed = true;
         }
 
         modifyVariableTable(methodNode, context);
 
         modifyCode(methodNode, context);
+
+        if(renamed){
+            //TODO: Check if dispatch is actually necessary. This could be done by checking if the method accesses any transformed fields
+
+            InsnList dispatch = new InsnList();
+            LabelNode label = new LabelNode();
+            dispatch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            dispatch.add(new FieldInsnNode(Opcodes.GETFIELD, isTransformedField.owner().getInternalName(), isTransformedField.name(), isTransformedField.desc().getDescriptor()));
+            dispatch.add(new JumpInsnNode(Opcodes.IFEQ, label));
+            //Dispatch to 3int
+            dispatch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            int index = 1;
+            for(Type arg: Type.getArgumentTypes(newDescriptor)){
+                dispatch.add(new VarInsnNode(arg.getOpcode(Opcodes.ILOAD), index));
+                index += arg.getSize();
+            }
+            dispatch.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, isTransformedField.owner().getInternalName(), methodNode.name, methodNode.desc, false));
+            dispatch.add(new InsnNode(Type.getReturnType(methodNode.desc).getOpcode(Opcodes.IRETURN)));
+            dispatch.add(label);
+
+            oldMethod.instructions.insertBefore(oldMethod.instructions.getFirst(), dispatch);
+        }else if(addSafety && (methodNode.access & Opcodes.ACC_SYNTHETIC) == 0){
+            InsnList dispatch = new InsnList();
+            LabelNode label = new LabelNode();
+            dispatch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            dispatch.add(new FieldInsnNode(Opcodes.GETFIELD, isTransformedField.owner().getInternalName(), isTransformedField.name(), isTransformedField.desc().getDescriptor()));
+            dispatch.add(new JumpInsnNode(Opcodes.IFEQ, label));
+
+            dispatch.add(new LdcInsnNode(classNode.name));
+            dispatch.add(new LdcInsnNode(oldMethod.name));
+            dispatch.add(new LdcInsnNode(oldMethod.desc));
+            dispatch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "me/salamander/cctransformer/transformer/TypeTransformer", "emitWarning", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V", false));
+
+            dispatch.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            int index = 1;
+            for(Type arg: Type.getArgumentTypes(oldMethod.desc)){
+                TransformSubtype argType = context.varTypes[0][index];
+                int finalIndex = index;
+                dispatch.add(argType.convertToTransformed(() -> {
+                    InsnList load = new InsnList();
+                    load.add(new VarInsnNode(arg.getOpcode(Opcodes.ILOAD), finalIndex));
+                    return load;
+                }, lambdaTransformers, classNode.name));
+                index += arg.getSize();
+            }
+
+            dispatch.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, classNode.name, methodNode.name, methodNode.desc, false));
+            dispatch.add(new InsnNode(Type.getReturnType(methodNode.desc).getOpcode(Opcodes.IRETURN)));
+
+            dispatch.add(label);
+
+            oldMethod.instructions.insertBefore(oldMethod.instructions.getFirst(), dispatch);
+        }
     }
 
     private void modifyCode(MethodNode methodNode, TransformContext context) {
@@ -356,7 +456,7 @@ public class TypeTransformer {
                     args[j] = frame.getStack(frame.getStackSize() - argCount + j);
                 }
 
-                MethodParameterInfo info = config.getMethodParameterInfo().get(methodID);
+                MethodParameterInfo info = context.methodInfos[i];
                 if(info != null) {
 
                     if (info.getTransformCondition().checkValidity(returnValue, args) == 1) {
@@ -389,9 +489,9 @@ public class TypeTransformer {
                 List<Type> types = varType.transformedTypes(ASMUtil.getType(varNode.getOpcode()));
 
                 List<Integer> vars = new ArrayList<>();
-                for (Type type : types) {
+                for (Type subType : types) {
                     vars.add(newVarIndex);
-                    newVarIndex += type.getSize();
+                    newVarIndex += subType.getSize();
                 }
 
                 //If the variable is being stored we must reverse the order of the types
@@ -419,15 +519,15 @@ public class TypeTransformer {
                 ensureValuesAreOnStack = false;
                 TransformTrackingValue value = ASMUtil.getTop(frames[i + 1]);
                 if(value.getTransformType() != null){
-                    if(value.getTransform().getSubtype() != TransformSubtype.Type.NONE){
-                        throw new IllegalStateException("Cannot expand constant value of type " + value.getTransform().getSubtype());
+                    if(value.getTransform().getSubtype() != TransformSubtype.SubType.NONE){
+                        throw new IllegalStateException("Cannot expand constant value of subType " + value.getTransform().getSubtype());
                     }
 
                     Object constant = ASMUtil.getConstant(instruction);
 
                     BytecodeFactory[] replacement = value.getTransformType().getConstantReplacements().get(constant);
                     if(replacement == null){
-                        throw new IllegalStateException("Cannot expand constant value of type " + value.getTransformType());
+                        throw new IllegalStateException("Cannot expand constant value of subType " + value.getTransformType());
                     }
 
                     InsnList newInstructions = new InsnList();
@@ -466,7 +566,7 @@ public class TypeTransformer {
                         InsnList newCmp = new InsnList();
 
                         for(int j = 0; j < types.size(); j++){
-                            Type type = types.get(j);
+                            Type subType = types.get(j);
                             newCmp.add(replacementLeft[j].generate());
                             newCmp.add(replacementRight[j].generate());
 
@@ -474,10 +574,10 @@ public class TypeTransformer {
                                 if(j == types.size() - 1){
                                     newCmp.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, success));
                                 }else {
-                                    newCmp.add(new JumpInsnNode(type.getOpcode(Opcodes.IF_ICMPNE), failure));
+                                    newCmp.add(new JumpInsnNode(subType.getOpcode(Opcodes.IF_ICMPNE), failure));
                                 }
                             }else{
-                                newCmp.add(new JumpInsnNode(type.getOpcode(Opcodes.IF_ICMPNE), success));
+                                newCmp.add(new JumpInsnNode(subType.getOpcode(Opcodes.IF_ICMPNE), success));
                             }
                         }
 
@@ -511,12 +611,12 @@ public class TypeTransformer {
                     List<Type> types = left.transformedTypes();
 
                     if(types.size() == 1){
-                        Type type = types.get(0);
-                        if(type.getSort() == Type.INT || type.getSort() == Type.OBJECT){
-                            jump.setOpcode(type.getOpcode(baseOpcode));
+                        Type subType = types.get(0);
+                        if(subType.getSort() == Type.INT || subType.getSort() == Type.OBJECT){
+                            jump.setOpcode(subType.getOpcode(baseOpcode));
                             context.target().instructions.remove(instruction);
                         }else{
-                            AbstractInsnNode newOp = new InsnNode(type.getOpcode(baseOpcode));
+                            AbstractInsnNode newOp = new InsnNode(subType.getOpcode(baseOpcode));
                             context.target().instructions.insertBefore(instruction, newOp);
                             context.target().instructions.remove(instruction);
                         }
@@ -529,22 +629,22 @@ public class TypeTransformer {
 
                         InsnList newCmp = new InsnList();
                         for(int j = 0; j < types.size(); j++){
-                            Type type = types.get(j);
+                            Type subType = types.get(j);
                             newCmp.add(replacementLeft[j].generate());
                             newCmp.add(replacementRight[j].generate());
 
-                            if(type.getSort() == Type.INT || type.getSort() == Type.OBJECT){
+                            if(subType.getSort() == Type.INT || subType.getSort() == Type.OBJECT){
                                 if(baseOpcode == Opcodes.IF_ICMPEQ){
                                     if(j == types.size() - 1) {
-                                        newCmp.add(new JumpInsnNode(type.getOpcode(Opcodes.IF_ICMPEQ), success));
+                                        newCmp.add(new JumpInsnNode(subType.getOpcode(Opcodes.IF_ICMPEQ), success));
                                     }else{
-                                        newCmp.add(new JumpInsnNode(type.getOpcode(Opcodes.IF_ICMPNE), failure));
+                                        newCmp.add(new JumpInsnNode(subType.getOpcode(Opcodes.IF_ICMPNE), failure));
                                     }
                                 }else{
-                                    newCmp.add(new JumpInsnNode(type.getOpcode(Opcodes.IF_ICMPNE), success));
+                                    newCmp.add(new JumpInsnNode(subType.getOpcode(Opcodes.IF_ICMPNE), success));
                                 }
                             }else{
-                                newCmp.add(new InsnNode(ASMUtil.getCompare(type)));
+                                newCmp.add(new InsnNode(ASMUtil.getCompare(subType)));
                                 if(baseOpcode == Opcodes.IF_ICMPEQ){
                                     if(j == types.size() - 1) {
                                         newCmp.add(new JumpInsnNode(Opcodes.IFEQ, success));
@@ -590,7 +690,7 @@ public class TypeTransformer {
                 }
 
                 //For lookups we do need to use the old owner
-                MethodID methodID = new MethodID(classNode.name, methodName, methodDesc, MethodID.CallType.VIRTUAL); // call type doesn't matter
+                MethodID methodID = new MethodID(classNode.name, methodName, methodDesc, MethodID.CallType.VIRTUAL); // call subType doesn't matter
                 AnalysisResults results = analysisResults.get(methodID);
                 if(results == null){
                     throw new IllegalStateException("Method not analyzed '" + methodID + "'");
@@ -660,7 +760,7 @@ public class TypeTransformer {
         if(!isStatic){
             List<Type> types = args[0].transformedTypes();
             if(types.size() != 1){
-                throw new IllegalStateException("Expected 1 type but got " + types.size());
+                throw new IllegalStateException("Expected 1 subType but got " + types.size());
             }
             methodCall.owner = types.get(0).getInternalName();
         }
@@ -777,7 +877,7 @@ public class TypeTransformer {
 
                 context.target().instructions.remove(actualSource);
 
-                if(arg.getTransformType() != null & arg.getTransform().getSubtype() == TransformSubtype.Type.NONE){
+                if(arg.getTransformType() != null & arg.getTransform().getSubtype() == TransformSubtype.SubType.NONE){
                     ret = arg.getTransformType().getConstantReplacements().get(constant);
                     if(ret == null){
                         throw new IllegalStateException("No constant replacement found for " + constant);
@@ -867,7 +967,7 @@ public class TypeTransformer {
                 int newIndex = context.varLookup[codeIndex][local.index];
 
                 TransformTrackingValue value = context.analysisResults().frames()[codeIndex].getLocal(local.index);
-                if (value.getTransformType() == null || value.getTransform().getSubtype() != TransformSubtype.Type.NONE) {
+                if (value.getTransformType() == null || value.getTransform().getSubtype() != TransformSubtype.SubType.NONE) {
                     String desc = value.getTransformType() == null ? value.getType().getDescriptor() : value.getTransform().getSingleType().getDescriptor();
                     newLocalVariables.add(new LocalVariableNode(local.name, desc, local.signature, local.start, local.end, newIndex));
                 } else {
@@ -893,7 +993,7 @@ public class TypeTransformer {
             }
             for(ParameterNode param : original){
                 TransformTrackingValue value = context.analysisResults.frames()[0].getLocal(index);
-                if (value.getTransformType() == null || value.getTransform().getSubtype() != TransformSubtype.Type.NONE) {
+                if (value.getTransformType() == null || value.getTransform().getSubtype() != TransformSubtype.SubType.NONE) {
                     newParameters.add(new ParameterNode(param.name, param.access));
                 } else {
                     String[] postfixes = value.getTransformType().getPostfix();
@@ -1008,28 +1108,41 @@ public class TypeTransformer {
             analysisResults.put(methodID, finalResults);
         }
 
-        //Change field type in new class
-        ClassNode clazz = newClassNode == null ? classNode : newClassNode;
-        for(var entry: fieldPseudoValues.entrySet()){
-            if(newClassNode == null){
-                throw new RuntimeException("Cannot change field type in existing class");
-            }
+        //Change field subType in new class
+        if(newClassNode != null) {
+            for (var entry : fieldPseudoValues.entrySet()) {
+                if (entry.getValue().getTransformType() == null) {
+                    continue;
+                }
 
+                TransformSubtype transformType = entry.getValue().getTransform();
+                FieldID fieldID = entry.getKey();
+                ASMUtil.changeFieldType(newClassNode, fieldID, transformType.getSingleType(), (m) -> new InsnList());
+            }
+        }
+    }
+
+    private void makeFieldCasts(){
+        for(var entry: fieldPseudoValues.entrySet()){
             if(entry.getValue().getTransformType() == null){
                 continue;
             }
 
             TransformSubtype transformType = entry.getValue().getTransform();
             FieldID fieldID = entry.getKey();
-            //FieldNode fieldNode = clazz.fields.stream().filter(f -> f.name.equals(fieldID.name()) && f.desc.equals(fieldID.desc().getDescriptor())).findAny().orElse(null);
 
-            ASMUtil.changeFieldType(newClassNode, fieldID, transformType.getSingleType());
+            String originalType = entry.getValue().getType().getInternalName();
+            String transformedType = transformType.getSingleType().getInternalName();
 
-            /*if(fieldNode == null){
-                throw new RuntimeException("Field " + fieldID + " not found in new class");
-            }
-
-            fieldNode.desc = transformType.getSingleType().getDescriptor();*/
+            ASMUtil.changeFieldType(classNode, fieldID, Type.getObjectType("java/lang/Object"), (method) -> {
+                InsnList insnList = new InsnList();
+                if(isSynthetic(method)) {
+                    insnList.add(new TypeInsnNode(Opcodes.CHECKCAST, transformType.getSingleType().getInternalName()));
+                }else{
+                    insnList.add(new TypeInsnNode(Opcodes.CHECKCAST, originalType));
+                }
+                return insnList;
+            });
         }
     }
 
@@ -1158,7 +1271,9 @@ public class TypeTransformer {
     }
 
     public void transformAllMethods() {
-        for (MethodNode methodNode : classNode.methods) {
+        int size = classNode.methods.size();
+        for (int i = 0; i < size; i++) {
+            MethodNode methodNode = classNode.methods.get(i);
             if (!methodNode.name.equals("<init>") && !methodNode.name.equals("<clinit>")) {
                 try {
                     transformMethod(methodNode);
@@ -1169,6 +1284,131 @@ public class TypeTransformer {
         }
 
         cleanUpTransform();
+    }
+
+    public void makeConstructor(String desc, InsnList constructor) {
+        Type[] args = Type.getArgumentTypes(desc);
+        int totalSize = 1;
+        for (Type arg : args) {
+            totalSize += arg.getSize();
+        }
+
+        Type[] newArgs = new Type[args.length + 1];
+        newArgs[newArgs.length - 1] = Type.INT_TYPE;
+        System.arraycopy(args, 0, newArgs, 0, args.length);
+        String newDesc = Type.getMethodDescriptor(Type.VOID_TYPE, newArgs);
+
+        InsnList safetyCheck = new InsnList();
+        LabelNode label = new LabelNode();
+        safetyCheck.add(new VarInsnNode(Opcodes.ILOAD, totalSize));
+        safetyCheck.add(new LdcInsnNode(MAGIC));
+        safetyCheck.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, label));
+        safetyCheck.add(new TypeInsnNode(Opcodes.NEW, "java/lang/IllegalArgumentException"));
+        safetyCheck.add(new InsnNode(Opcodes.DUP));
+        safetyCheck.add(new LdcInsnNode("Wrong magic value '"));
+        safetyCheck.add(new VarInsnNode(Opcodes.ILOAD, totalSize));
+        safetyCheck.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/Integer", "toHexString", "(I)Ljava/lang/String;", false));
+        safetyCheck.add(new LdcInsnNode("'"));
+        safetyCheck.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;", false));
+        safetyCheck.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;", false));
+        safetyCheck.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/IllegalArgumentException", "<init>", "(Ljava/lang/String;)V", false));
+        safetyCheck.add(new InsnNode(Opcodes.ATHROW));
+        safetyCheck.add(label);
+        safetyCheck.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        safetyCheck.add(new InsnNode(Opcodes.ICONST_1));
+        safetyCheck.add(new FieldInsnNode(Opcodes.PUTFIELD, classNode.name, isTransformedField.name(), "Z"));
+
+        AbstractInsnNode[] nodes = constructor.toArray();
+
+        //Find super call
+        for(AbstractInsnNode node : nodes){
+            if(node.getOpcode() == Opcodes.INVOKESPECIAL){
+                MethodInsnNode methodNode = (MethodInsnNode) node;
+                if(methodNode.owner.equals(classNode.superName)){
+                    constructor.insert(safetyCheck);
+                    break;
+                }
+            }
+        }
+
+        //Shift variables
+        for(AbstractInsnNode node : nodes){
+            if(node instanceof VarInsnNode varNode){
+                if(varNode.var >= totalSize){
+                    varNode.var++;
+                }
+            }else if(node instanceof IincInsnNode iincNode){
+                if(iincNode.var >= totalSize){
+                    iincNode.var++;
+                }
+            }
+        }
+
+        MethodNode methodNode = new MethodNode(Opcodes.ACC_PUBLIC, "<init>", newDesc, null, null);
+        methodNode.instructions.add(constructor);
+
+        markSynthetic(methodNode, "CONSTRUCTOR", "<init>" + desc);
+
+        newMethods.add(methodNode);
+    }
+
+    private void insertAtReturn(MethodNode methodNode, Supplier<InsnList> insn) {
+        InsnList instructions = methodNode.instructions;
+        AbstractInsnNode[] nodes = instructions.toArray();
+
+        for (AbstractInsnNode node: nodes) {
+            if (   node.getOpcode() == Opcodes.RETURN
+                || node.getOpcode() == Opcodes.ARETURN
+                || node.getOpcode() == Opcodes.IRETURN
+                || node.getOpcode() == Opcodes.FRETURN
+                || node.getOpcode() == Opcodes.DRETURN
+                || node.getOpcode() == Opcodes.LRETURN) {
+                instructions.insertBefore(node, insn.get());
+            }
+        }
+    }
+
+    private static void markSynthetic(MethodNode methodNode, String subType, String original){
+        List<AnnotationNode> annotations = methodNode.visibleAnnotations;
+        if(annotations == null){
+            annotations = new ArrayList<>();
+            methodNode.visibleAnnotations = annotations;
+        }
+
+        AnnotationNode synthetic = new AnnotationNode(Type.getDescriptor(CCSynthetic.class));
+
+        synthetic.values = new ArrayList<>();
+        synthetic.values.add("subType");
+        synthetic.values.add(subType);
+        synthetic.values.add("original");
+        synthetic.values.add(original);
+
+        annotations.add(synthetic);
+    }
+
+    private static boolean isSynthetic(MethodNode methodNode){
+        List<AnnotationNode> annotations = methodNode.visibleAnnotations;
+        if(annotations == null){
+            return false;
+        }
+
+        for(AnnotationNode annotation : annotations){
+            if(annotation.desc.equals(Type.getDescriptor(CCSynthetic.class))){
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static void emitWarning(String methodOwner, String methodName, String methodDesc){
+        StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+        StackTraceElement caller = stackTrace[1];
+
+        String warningID = methodOwner + "." + methodName + methodDesc + " at " + caller.getClassName() + "." + caller.getMethodName() + ":" + caller.getLineNumber();
+        if(warnings.add(warningID)){
+            System.out.println("[CC] Incorrect Invocation: " + warningID);
+        }
     }
 
     private record TransformContext(MethodNode target, AnalysisResults analysisResults, AbstractInsnNode[] instructions, boolean[] expandedEmitter, boolean[] expandedConsumer, boolean[] removedEmitter, BytecodeFactory[][] syntheticEmitters, int[][] varLookup, TransformSubtype[][] varTypes, VariableManager variableManager, Map<AbstractInsnNode, Integer> indexLookup,

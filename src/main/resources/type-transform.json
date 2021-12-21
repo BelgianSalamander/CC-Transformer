@@ -78,221 +78,257 @@
   "methods": [
     {
       "method": "v net/minecraft/class_2338#method_10063 ()J", //BlockPos.asLong
-      "parameters": [null],
-      "return": "blockpos",
-      "replacement": [
-        [
-          {
-            "type": "INVOKEVIRTUAL",
-            "method": {
-              "owner": "net/minecraft/class_2382", //Vec3i
-              "name": "method_10263", //getX,
-              "desc": "()I",
-              "call_type": "virtual"
-            }
-          }
-        ],
-        [
-          {
-            "type": "INVOKEVIRTUAL",
-            "method": {
-              "owner": "net/minecraft/class_2382", //Vec3i
-              "name": "method_10264", //getY,
-              "desc": "()I",
-              "call_type": "virtual"
-            }
-          }
-        ],
-        [
-          {
-            "type": "INVOKEVIRTUAL",
-            "method": {
-              "owner": "net/minecraft/class_2382", //Vec3i
-              "name": "method_10260", //getZ,
-              "desc": "()I",
-              "call_type": "virtual"
-            }
-          }
-        ]
+      "possibilities": [
+        {
+          "parameters": [null],
+          "return": "blockpos",
+          "replacement": [
+            [
+              {
+                "type": "INVOKEVIRTUAL",
+                "method": {
+                  "owner": "net/minecraft/class_2382", //Vec3i
+                  "name": "method_10263", //getX,
+                  "desc": "()I",
+                  "call_type": "virtual"
+                }
+              }
+            ],
+            [
+              {
+                "type": "INVOKEVIRTUAL",
+                "method": {
+                  "owner": "net/minecraft/class_2382", //Vec3i
+                  "name": "method_10264", //getY,
+                  "desc": "()I",
+                  "call_type": "virtual"
+                }
+              }
+            ],
+            [
+              {
+                "type": "INVOKEVIRTUAL",
+                "method": {
+                  "owner": "net/minecraft/class_2382", //Vec3i
+                  "name": "method_10260", //getZ,
+                  "desc": "()I",
+                  "call_type": "virtual"
+                }
+              }
+            ]
+          ]
+        }
       ]
     },
     {
-      "method": "s net/minecraft/class_2338#method_10060 (JLnet/minecraft/class_2350;)J", //BlockPos.offset
-      "parameters": ["blockpos", null],
-      "return": "blockpos",
-      "replacement": [
-        [
-          {
-            "type": "INVOKEVIRTUAL",
-            "method": {
-              "owner": "net/minecraft/class_2350",
-              "name": "method_10148",
-              "desc": "()I",
-              "call_type": "virtual"
-            }
-          },
-          "IADD"
-        ],
-        [
-          {
-            "type": "INVOKEVIRTUAL",
-            "method": {
-              "owner": "net/minecraft/class_2350",
-              "name": "method_10164",
-              "desc": "()I",
-              "call_type": "virtual"
-            }
-          },
-          "IADD"
-        ],
-        [
-          {
-            "type": "INVOKEVIRTUAL",
-            "method": {
-              "owner": "net/minecraft/class_2350",
-              "name": "method_10165",
-              "desc": "()I",
-              "call_type": "virtual"
-            }
-          },
-          "IADD"
-        ]
+      "method": "s net/minecraft/class_2338#method_10060 (JLnet/minecraft/class_2350;)J",
+      //BlockPos.offset
+      "possibilities": [
+        {
+          "parameters": ["blockpos", null],
+          "return": "blockpos",
+          "replacement": [
+            [
+              {
+                "type": "INVOKEVIRTUAL",
+                "method": {
+                  "owner": "net/minecraft/class_2350",
+                  "name": "method_10148",
+                  "desc": "()I",
+                  "call_type": "virtual"
+                }
+              },
+              "IADD"
+            ],
+            [
+              {
+                "type": "INVOKEVIRTUAL",
+                "method": {
+                  "owner": "net/minecraft/class_2350",
+                  "name": "method_10164",
+                  "desc": "()I",
+                  "call_type": "virtual"
+                }
+              },
+              "IADD"
+            ],
+            [
+              {
+                "type": "INVOKEVIRTUAL",
+                "method": {
+                  "owner": "net/minecraft/class_2350",
+                  "name": "method_10165",
+                  "desc": "()I",
+                  "call_type": "virtual"
+                }
+              },
+              "IADD"
+            ]
+          ]
+        }
       ]
     },
     {
       "method": "i it/unimi/dsi/fastutil/longs/LongSet#remove (J)Z",
-      "parameters": ["blockpos_set", "blockpos"],
-      "minimums": [
+      "possibilities": [
         {
-          "parameters": ["blockpos_set", null]
-        },
-        {
-          "parameters": [null, "blockpos"]
+          "parameters": ["blockpos_set", "blockpos"],
+          "minimums": [
+            {
+              "parameters": ["blockpos_set", null]
+            },
+            {
+              "parameters": [null, "blockpos"]
+            }
+          ]
         }
       ]
     },
     {
       "method": "i it/unimi/dsi/fastutil/longs/Long2ByteMap#remove (J)B",
-      "parameters": ["blockpos_byte_map", "blockpos"],
-      "minimums": [
+      "possibilities": [
         {
-          "parameters": ["blockpos_byte_map", null]
-        },
-        {
-          "parameters": [null, "blockpos"]
+          "parameters": ["blockpos_byte_map", "blockpos"
+          ],
+          "minimums": [
+            {
+              "parameters": ["blockpos_byte_map", null]
+            },
+            {
+              "parameters": [null, "blockpos"]
+            }
+          ]
         }
       ]
     },
     {
       "method": "i it/unimi/dsi/fastutil/longs/Long2ByteMap#keySet ()Lit/unimi/dsi/fastutil/longs/LongSet;",
-      "parameters": ["blockpos_byte_map"],
-      "return": "blockpos_set",
-      "replacement": [
-        [
-          {
-            "type": "INVOKEVIRTUAL",
-            "method": "v me/salamander/cctransformer/util/Int3UByteLinkedHashMap#keySet ()Lme/salamander/cctransformer/LinkedInt3Set;"
-          }
-        ]
-      ],
-      "minimums": [
+      "possibilities": [
         {
-          "parameters": ["blockpos_byte_map"]
+          "parameters": ["blockpos_byte_map"],
+          "return": "blockpos_set",
+          "replacement": [
+            [
+              {
+                "type": "INVOKEVIRTUAL",
+                "method": "v me/salamander/cctransformer/util/Int3UByteLinkedHashMap#keySet ()Lme/salamander/cctransformer/LinkedInt3Set;"
+              }
+            ]
+          ],
+          "minimums": [
+            {
+              "parameters": ["blockpos_byte_map"]
+            }
+          ]
         }
       ]
     },
     {
       "method": "i it/unimi/dsi/fastutil/longs/LongSet#forEach (Ljava/util/function/LongConsumer;)V",
-      "parameters": ["blockpos_set", "blockpos consumer"],
-      "minimums": [
+      "possibilities": [
         {
-          "parameters": ["blockpos_set", null]
-        },
-        {
-          "parameters": [null, "blockpos consumer"]
+          "parameters": ["blockpos_set", "blockpos consumer"],
+          "minimums": [
+            {
+              "parameters": ["blockpos_set", null]
+            },
+            {
+              "parameters": [null, "blockpos consumer"]
+            }
+          ]
         }
       ]
     },
     {
       "method": "i it/unimi/dsi/fastutil/longs/Long2ByteMap#get (J)B",
-      "parameters": ["blockpos_byte_map", "blockpos"],
-      "minimums": [
+      "possibilities": [
         {
-          "parameters": ["blockpos_byte_map", null]
-        },
-        {
-          "parameters": [null, "blockpos"]
+          "parameters": ["blockpos_byte_map", "blockpos"
+          ],
+          "minimums": [
+            {
+              "parameters": ["blockpos_byte_map", null]
+            },
+            {
+              "parameters": [null, "blockpos"]
+            }
+          ]
         }
       ]
     },
     {
       "method": "v it/unimi/dsi/fastutil/longs/LongLinkedOpenHashSet#removeFirstLong ()J",
-      "parameters": [
-        "blockpos_set"
-      ],
-      "return": "blockpos",
-      "minimums": [
+      "possibilities": [
         {
-          "parameters": [
-            "blockpos_set"
-          ]
-        },
-        {
-          "parameters": [
-            null
+          "parameters": ["blockpos_set"],
+          "return": "blockpos",
+          "minimums": [
+            {
+              "parameters": ["blockpos_set"]
+            },
+            {
+              "parameters": [null],
+              "return": "blockpos"
+            }
           ],
-          "return": "blockpos"
+          "replacement": [
+            [
+              {
+                "type": "INVOKEVIRTUAL",
+                "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#getFirstX ()I"
+              }
+            ],
+            [
+              {
+                "type": "INVOKEVIRTUAL",
+                "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#getFirstY ()I"
+              }
+            ],
+            [
+              {
+                "type": "INVOKEVIRTUAL",
+                "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#getFirstZ ()I"
+              }
+            ]
+          ],
+          "finalizer": [
+            {
+              "type": "INVOKEVIRTUAL",
+              "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#removeFirstValue ()V"
+            }
+          ]
         }
-      ],
-      "replacement": [
-        [
-          {
-            "type": "INVOKEVIRTUAL",
-            "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#getFirstX ()I"
-          }
-        ],
-        [
-          {
-            "type": "INVOKEVIRTUAL",
-            "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#getFirstY ()I"
-          }
-        ],
-        [
-          "DUP",
-          {
-            "type": "INVOKEVIRTUAL",
-            "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#getFirstZ ()I"
-          },
-          "SWAP",
-          {
-            "type": "INVOKEVIRTUAL",
-            "method": "v me/salamander/cctransformer/util/LinkedInt3HashSet#removeFirstValue ()V"
-            //This is a little hacky, but it should always work (I think)
-          }
-        ]
       ]
     },
     {
       "method": "i it/unimi/dsi/fastutil/longs/LongList#add (J)Z",
-      "parameters": ["blockpos_list", "blockpos"],
-      "minimums": [
+      "possibilities": [
         {
-          "parameters": ["blockpos_list", null]
-        },
-        {
-          "parameters": [null, "blockpos"]
+          "parameters": ["blockpos_list", "blockpos"],
+          "minimums": [
+            {
+              "parameters": ["blockpos_list", null]
+            },
+            {
+              "parameters": [null, "blockpos"]
+            }
+          ]
         }
       ]
     },
     {
       "method": "i it/unimi/dsi/fastutil/longs/LongList#forEach (Ljava/util/function/LongConsumer;)V",
-      "parameters": ["blockpos_list", "blockpos consumer"],
-      "minimums": [
+      "possibilities": [
         {
-          "parameters": ["blockpos_list", null]
-        },
-        {
-          "parameters": [null, "blockpos consumer"]
+          "parameters": ["blockpos_list", "blockpos consumer"],
+          "minimums": [
+            {
+              "parameters": ["blockpos_list", null]
+            },
+            {
+              "parameters": [null, "blockpos consumer"]
+            }
+          ]
         }
       ]
     }

@@ -10,7 +10,7 @@ import java.util.Set;
 /**
  * A set that combines sets. All operations affect all sets.
  * Some operations can be quite expensive. This is due to the fact that you are allowed to modify the underlying sets.
- * @param <T> The type of the elements in the set
+ * @param <T> The subType of the elements in the set
  */
 public class CombinedSet<T> implements Set<T> {
     private final Set<T>[] sets;

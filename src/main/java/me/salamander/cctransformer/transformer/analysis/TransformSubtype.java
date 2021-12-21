@@ -2,16 +2,21 @@ package me.salamander.cctransformer.transformer.analysis;
 
 import me.salamander.cctransformer.transformer.config.Config;
 import me.salamander.cctransformer.transformer.config.TransformType;
+import org.objectweb.asm.Handle;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.*;
 
+import java.lang.invoke.CallSite;
 import java.util.*;
+import java.util.function.Supplier;
 
 public class TransformSubtype {
     private final TransformTypePtr transformType;
     private int arrayDimensionality;
-    private Type subtype;
+    private SubType subtype;
 
-    public TransformSubtype(TransformTypePtr transformType, int arrayDimensionality, Type subtype) {
+    public TransformSubtype(TransformTypePtr transformType, int arrayDimensionality, SubType subtype) {
         this.transformType = transformType;
         this.arrayDimensionality = arrayDimensionality;
         this.subtype = subtype;
@@ -29,7 +34,7 @@ public class TransformSubtype {
         return arrayDimensionality;
     }
 
-    public Type getSubtype() {
+    public SubType getSubtype() {
         return subtype;
     }
 
@@ -38,11 +43,11 @@ public class TransformSubtype {
     }
 
     public static TransformSubtype createDefault() {
-        return new TransformSubtype(new TransformTypePtr(null), 0, Type.NONE);
+        return new TransformSubtype(new TransformTypePtr(null), 0, SubType.NONE);
     }
 
-    void setSubType(Type transformType) {
-        this.subtype = transformType;
+    void setSubType(SubType transformSubType) {
+        this.subtype = transformSubType;
     }
 
     public static TransformSubtype fromString(String s, Map<String, TransformType> transformLookup) {
@@ -54,25 +59,25 @@ public class TransformSubtype {
         }
 
         String[] parts = s.split(" ");
-        Type type;
+        SubType subType;
         TransformType transformType = transformLookup.get(parts[0]);
         if (parts.length == 1) {
-            type = Type.NONE;
+            subType = SubType.NONE;
         }else{
-            type = Type.fromString(parts[1]);
+            subType = SubType.fromString(parts[1]);
         }
-        return new TransformSubtype(new TransformTypePtr(transformType), arrDimensionality, type);
+        return new TransformSubtype(new TransformTypePtr(transformType), arrDimensionality, subType);
     }
 
-    public static TransformSubtype of(TransformType type){
-        return new TransformSubtype(new TransformTypePtr(type), 0, Type.NONE);
+    public static TransformSubtype of(TransformType subType){
+        return new TransformSubtype(new TransformTypePtr(subType), 0, SubType.NONE);
     }
 
-    public static TransformSubtype of(TransformType transformType, String type) {
-        return new TransformSubtype(new TransformTypePtr(transformType), 0, Type.fromString(type));
+    public static TransformSubtype of(TransformType transformType, String subType) {
+        return new TransformSubtype(new TransformTypePtr(transformType), 0, SubType.fromString(subType));
     }
 
-    public org.objectweb.asm.Type getRawType(TransformType transformType) {
+    public Type getRawType(TransformType transformType) {
         return switch (this.subtype){
             case NONE -> transformType.getFrom();
             case PREDICATE -> transformType.getOriginalPredicateType();
@@ -80,36 +85,36 @@ public class TransformSubtype {
         };
     }
 
-    public static Type getSubType(org.objectweb.asm.Type type){
+    public static SubType getSubType(Type subType){
         while(true) {
-            if (regularTypes.contains(type)) {
-                return Type.NONE;
-            } else if (consumerTypes.contains(type)) {
-                return Type.CONSUMER;
-            } else if (predicateTypes.contains(type)) {
-                return Type.PREDICATE;
+            if (regularTypes.contains(subType)) {
+                return SubType.NONE;
+            } else if (consumerTypes.contains(subType)) {
+                return SubType.CONSUMER;
+            } else if (predicateTypes.contains(subType)) {
+                return SubType.PREDICATE;
             }
 
-            if(type.getSort() != org.objectweb.asm.Type.ARRAY){
+            if(subType.getSort() != Type.ARRAY){
                 break;
             }else{
-                type = type.getElementType();
+                subType = subType.getElementType();
             }
         }
 
 
-        return Type.NONE;
+        return SubType.NONE;
     }
 
-    public org.objectweb.asm.Type getSingleType() {
-        if(subtype == Type.NONE && transformType.getValue().getTo().length != 1){
-            throw new IllegalStateException("Cannot get single type for " + this);
+    public Type getSingleType() {
+        if(subtype == SubType.NONE && transformType.getValue().getTo().length != 1){
+            throw new IllegalStateException("Cannot get single subType for " + this);
         }
 
-        org.objectweb.asm.Type baseType;
-        if(subtype == Type.NONE){
+        Type baseType;
+        if(subtype == SubType.NONE){
             baseType = transformType.getValue().getTo()[0];
-        }else if(subtype == Type.CONSUMER){
+        }else if(subtype == SubType.CONSUMER){
             baseType = transformType.getValue().getTransformedConsumerType();
         }else {
             baseType = transformType.getValue().getTransformedPredicateType();
@@ -118,16 +123,16 @@ public class TransformSubtype {
         if(arrayDimensionality == 0){
             return baseType;
         }else{
-            return org.objectweb.asm.Type.getType("[".repeat(arrayDimensionality) + baseType.getDescriptor());
+            return Type.getType("[".repeat(arrayDimensionality) + baseType.getDescriptor());
         }
     }
 
     //Does not work with array dimensionality
-    private List<org.objectweb.asm.Type> transformedTypes(){
-        List<org.objectweb.asm.Type> types = new ArrayList<>();
-        if(subtype == Type.NONE){
+    private List<Type> transformedTypes(){
+        List<Type> types = new ArrayList<>();
+        if(subtype == SubType.NONE){
             types.addAll(Arrays.asList(transformType.getValue().getTo()));
-        }else if(subtype == Type.CONSUMER){
+        }else if(subtype == SubType.CONSUMER){
             types.add(transformType.getValue().getTransformedConsumerType());
         }else {
             types.add(transformType.getValue().getTransformedPredicateType());
@@ -137,26 +142,26 @@ public class TransformSubtype {
     }
 
     public int getTransformedSize() {
-        if(subtype == Type.NONE){
+        if(subtype == SubType.NONE){
             return transformType.getValue().getTransformedSize();
         }else{
             return 1;
         }
     }
 
-    public List<org.objectweb.asm.Type> transformedTypes(org.objectweb.asm.Type type){
+    public List<Type> transformedTypes(Type subType){
         if(transformType.getValue() == null){
-            return List.of(type);
+            return List.of(subType);
         }
         return transformedTypes();
     }
 
-    public enum Type {
+    public enum SubType {
         NONE,
         PREDICATE,
         CONSUMER;
 
-        public static Type fromString(String part) {
+        public static SubType fromString(String part) {
             return switch (part.toLowerCase(Locale.ROOT)) {
                 case "predicate" -> PREDICATE;
                 case "consumer" -> CONSUMER;
@@ -186,7 +191,7 @@ public class TransformSubtype {
         StringBuilder sb = new StringBuilder();
 
         if(transformType.getValue() == null){
-            if(subtype == Type.NONE){
+            if(subtype == SubType.NONE){
                 return "No transform";
             }else{
                 sb.append(subtype.name().toLowerCase(Locale.ROOT));
@@ -197,7 +202,7 @@ public class TransformSubtype {
 
         sb.append(transformType.getValue());
 
-        if(subtype != Type.NONE){
+        if(subtype != SubType.NONE){
             sb.append(" ");
             sb.append(subtype.name().toLowerCase(Locale.ROOT));
         }
@@ -211,16 +216,152 @@ public class TransformSubtype {
         return sb.toString();
     }
 
-    private static final Set<org.objectweb.asm.Type> regularTypes = new HashSet<>();
-    private static final Set<org.objectweb.asm.Type> consumerTypes = new HashSet<>();
-    private static final Set<org.objectweb.asm.Type> predicateTypes = new HashSet<>();
+    /**
+     * Converts a value into the transformed value
+     * @param originalSupplier The supplier of the original value
+     * @param transformers A set. This should be unique per-class.
+     * @param className The name of the class being transformed.
+     * @return The transformed value
+     */
+    public InsnList convertToTransformed(Supplier<InsnList> originalSupplier, Set<MethodNode> transformers, String className){
+        if(transformType.getValue() == null){
+            //No transform needed
+            return originalSupplier.get();
+        }
+
+        if(arrayDimensionality != 0){
+            throw new IllegalStateException("Not supported yet");
+        }
+
+        if(subtype == SubType.NONE){
+            return transformType.getValue().convertToTransformed(originalSupplier);
+        }else if(subtype == SubType.CONSUMER || subtype == SubType.PREDICATE){
+            /*
+             * Example:
+             *   LongConsumer c = ...;
+             * Becomes:
+             *   Int3Consumer c1 = (x, y, z) -> c.accept(BlockPos.asLong(x, y, z));
+             * We need to create a new lambda which turns the takes transformed values, turns them into the original values, and then calls the original lambda.
+             */
+
+            InsnList list = new InsnList();
+            list.add(originalSupplier.get());
+
+            Type returnType;
+            String transformerType;
+            String methodName;
+
+            Type originalLambdaType;
+            Type transformedLambdaType;
+
+            if(subtype == SubType.CONSUMER){
+                returnType = Type.VOID_TYPE;
+                transformerType = "consumer";
+                methodName = "accept";
+                originalLambdaType = transformType.getValue().getOriginalConsumerType();
+                transformedLambdaType = transformType.getValue().getTransformedConsumerType();
+            }else{
+                returnType = Type.BOOLEAN_TYPE;
+                transformerType = "predicate";
+                methodName = "test";
+                originalLambdaType = transformType.getValue().getOriginalPredicateType();
+                transformedLambdaType = transformType.getValue().getTransformedPredicateType();
+            }
+
+            String returnDescriptor = returnType.getDescriptor();
+
+            //Name that is unique per-type for easy lookup
+            String transformerName = "lambdaTransformer_" + transformerType + "_" + transformType.getValue().getName();
+
+            //Find if the transformer has already been created
+            MethodNode transformer = null;
+            for(MethodNode mn : transformers){
+                if(mn.name.equals(transformerName)){
+                    transformer = mn;
+                }
+            }
+
+            if(transformer == null){
+                /*
+                 * This is the lambda method that the call will get passed to. For the above example this would be:
+                 * private static void lambdaTransformer_consumer_blockpos(LongConsumer c, int x, int y, int z){
+                 *     c.accept(BlockPos.asLong(x, y, z));
+                 * }
+                 */
+                int access = Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC; //Remove synthetic flag to make it easier to debug
+
+                //Create the new descriptor for the lambda
+                StringBuilder descBuilder = new StringBuilder();
+                descBuilder.append("(");
+                descBuilder.append(originalLambdaType.getDescriptor());
+                for(Type t: transformType.getValue().getTo()){
+                    descBuilder.append(t.getDescriptor());
+                }
+                descBuilder.append(")");
+                descBuilder.append(returnDescriptor);
+
+                transformer = new MethodNode(Opcodes.ASM9, access, transformerName, descBuilder.toString(), null, null);
+
+                InsnList l = new InsnList();
+                //Load original consumer
+                l.add(new VarInsnNode(Opcodes.ALOAD, 0));
+
+                //Load transformed values
+                int index = 1;
+                for(Type t: transformType.getValue().getTo()){
+                    l.add(new VarInsnNode(t.getOpcode(Opcodes.ILOAD), index));
+                    index += t.getSize();
+                }
+
+                //Transform the transformed values back into the original values
+                l.add(transformType.getValue().getToOriginal().callNode());
+
+                //Call original
+                String newDesc = Type.getMethodDescriptor(returnType, transformType.getValue().getFrom());
+                l.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, originalLambdaType.getInternalName(), methodName, newDesc, true));
+                l.add(new InsnNode(returnType.getOpcode(Opcodes.IRETURN)));
+
+                //Actually insert the code
+                transformer.instructions.add(l);
+
+                //Add the lambda to the transformers
+                transformers.add(transformer);
+            }
+
+            //Create the actual MethodHandle
+            Handle transformerHandle = new Handle(Opcodes.H_INVOKESTATIC, className, transformer.name, transformer.desc, false);
+
+            list.add(new InvokeDynamicInsnNode(
+                    methodName,
+                    "(" + originalLambdaType.getDescriptor() + ")" + transformedLambdaType.getDescriptor(),
+                    new Handle(
+                            Opcodes.H_INVOKESTATIC,
+                            "java/lang/invoke/LambdaMetafactory",
+                            "metafactory",
+                            "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
+                            false
+                    ),
+                    Type.getMethodType(returnType, transformType.getValue().getTo()),
+                    transformerHandle,
+                    Type.getMethodType(returnType, transformType.getValue().getTo())
+            ));
+
+            return list;
+        }
+
+        throw new IllegalArgumentException("Unsupported subtype: " + subtype);
+    }
+
+    private static final Set<Type> regularTypes = new HashSet<>();
+    private static final Set<Type> consumerTypes = new HashSet<>();
+    private static final Set<Type> predicateTypes = new HashSet<>();
 
     public static void init(Config config){
         for(var entry: config.getTypes().entrySet()){
-            var type = entry.getValue();
-            regularTypes.add(type.getFrom());
-            consumerTypes.add(type.getOriginalConsumerType());
-            predicateTypes.add(type.getOriginalPredicateType());
+            var subType = entry.getValue();
+            regularTypes.add(subType.getFrom());
+            consumerTypes.add(subType.getOriginalConsumerType());
+            predicateTypes.add(subType.getOriginalPredicateType());
         }
     }
 }

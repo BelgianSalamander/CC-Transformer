@@ -9,9 +9,11 @@ import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.MethodInsnNode;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 public class TransformType {
     private final String id;
@@ -68,7 +70,7 @@ public class TransformType {
         return str.toString();
     }
 
-    public void addParameterInfoTo(Map<MethodID, MethodParameterInfo> parameterInfo) {
+    public void addParameterInfoTo(Map<MethodID, List<MethodParameterInfo>> parameterInfo) {
         if(fromOriginal != null) {
             int i = 0;
             for (MethodID methodID : fromOriginal) {
@@ -83,7 +85,7 @@ public class TransformType {
                         }
                 );
                 MethodParameterInfo info = new MethodParameterInfo(methodID, TransformSubtype.of(null), new TransformSubtype[]{TransformSubtype.of(this)}, null, methodReplacement);
-                parameterInfo.put(methodID, info);
+                parameterInfo.computeIfAbsent(methodID, k -> new ArrayList<>()).add(info);
                 i++;
             }
         }
@@ -111,7 +113,7 @@ public class TransformType {
             }
 
             MethodParameterInfo info = new MethodParameterInfo(toOriginal, TransformSubtype.of(this), to, null, new MethodReplacement(expansions, indices));
-            parameterInfo.put(toOriginal, info);
+            parameterInfo.computeIfAbsent(toOriginal, k -> new ArrayList<>()).add(info);
         }
 
         if(originalPredicateType != null) {
@@ -133,7 +135,7 @@ public class TransformType {
             };
 
             MethodParameterInfo info = new MethodParameterInfo(predicateID, TransformSubtype.of(null), argTypes, minimums, methodReplacement);
-            parameterInfo.put(predicateID, info);
+            parameterInfo.computeIfAbsent(predicateID, k -> new ArrayList<>()).add(info);
         }
 
         if(originalConsumerType != null) {
@@ -155,7 +157,7 @@ public class TransformType {
             };
 
             MethodParameterInfo info = new MethodParameterInfo(consumerID, TransformSubtype.of(null), argTypes, minimums, methodReplacement);
-            parameterInfo.put(consumerID, info);
+            parameterInfo.computeIfAbsent(consumerID, k -> new ArrayList<>()).add(info);
         }
     }
 
@@ -205,5 +207,17 @@ public class TransformType {
 
     public Map<Object, BytecodeFactory[]> getConstantReplacements() {
         return constantReplacements;
+    }
+
+    public InsnList convertToTransformed(Supplier<InsnList> originalSupplier) {
+        InsnList list = new InsnList();
+
+        //Use the methods provided in the config
+        for (MethodID methodID : fromOriginal) {
+            list.add(originalSupplier.get());
+            list.add(methodID.callNode());
+        }
+
+        return list;
     }
 }

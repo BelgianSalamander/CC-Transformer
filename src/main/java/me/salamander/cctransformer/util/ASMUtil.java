@@ -6,6 +6,9 @@ import org.objectweb.asm.tree.*;
 import org.objectweb.asm.tree.analysis.Frame;
 import org.objectweb.asm.tree.analysis.Value;
 
+import java.util.function.Function;
+import java.util.function.Supplier;
+
 import static org.objectweb.asm.Opcodes.*;
 
 public class ASMUtil {
@@ -17,8 +20,8 @@ public class ASMUtil {
             size++;
         }
 
-        for(Type type : argTypes) {
-            size += type.getSize();
+        for(Type subType : argTypes) {
+            size += subType.getSize();
         }
 
         return size;
@@ -55,9 +58,9 @@ public class ASMUtil {
             argIndex++;
         }
 
-        for(Type type: argTypes){
+        for(Type subType: argTypes){
             argArr[argIndex] = varArr[varIndex];
-            varIndex += type.getSize();
+            varIndex += subType.getSize();
             argIndex++;
         }
     }
@@ -112,15 +115,15 @@ public class ASMUtil {
         return opcode == ICONST_M1 || opcode == ICONST_0 || opcode == ICONST_1 || opcode == ICONST_2 || opcode == ICONST_3 || opcode == ICONST_4 || opcode == ICONST_5 || opcode == LCONST_0 || opcode == LCONST_1 || opcode == FCONST_0 || opcode == FCONST_1 || opcode == FCONST_2 || opcode == DCONST_0 || opcode == DCONST_1;
     }
 
-    public static int getCompare(Type type){
-        if (type == Type.FLOAT_TYPE) {
+    public static int getCompare(Type subType){
+        if (subType == Type.FLOAT_TYPE) {
             return FCMPL;
-        }else if (type == Type.DOUBLE_TYPE) {
+        }else if (subType == Type.DOUBLE_TYPE) {
             return DCMPL;
-        }else if (type == Type.LONG_TYPE) {
+        }else if (subType == Type.LONG_TYPE) {
             return LCMP;
         }else {
-            throw new IllegalArgumentException("Type " + type + " is not allowed!");
+            throw new IllegalArgumentException("Type " + subType + " is not allowed!");
         }
     }
 
@@ -222,16 +225,16 @@ public class ASMUtil {
                             desc = Type.getMethodDescriptor(Type.getReturnType(desc), types);
 
                             dynamicCall.bsmArgs[i] = new Handle(tag, owner, name, desc, itf);
-                        }else if(arg instanceof Type type){
-                            if(type.getSort() == Type.METHOD){
-                                Type[] types = Type.getArgumentTypes(type.getDescriptor());
+                        }else if(arg instanceof Type subType){
+                            if(subType.getSort() == Type.METHOD){
+                                Type[] types = Type.getArgumentTypes(subType.getDescriptor());
                                 for(int j = 0; j < types.length; j++){
                                     if(types[j].getClassName().replace('.', '/').equals(previousName)){
                                         types[j] = Type.getObjectType(newName);
                                     }
                                 }
-                                dynamicCall.bsmArgs[i] = Type.getMethodType(Type.getReturnType(type.getDescriptor()), types);
-                            }else if(type.getClassName().replace('.', '/').equals(previousName)){
+                                dynamicCall.bsmArgs[i] = Type.getMethodType(Type.getReturnType(subType.getDescriptor()), types);
+                            }else if(subType.getClassName().replace('.', '/').equals(previousName)){
                                 dynamicCall.bsmArgs[i] = Type.getObjectType(newName);
                             }
                         }
@@ -247,7 +250,7 @@ public class ASMUtil {
         renameInstructions(classNode, previousName, s);
     }
 
-    public static void changeFieldType(ClassNode target, FieldID fieldID, Type newType) {
+    public static void changeFieldType(ClassNode target, FieldID fieldID, Type newType, Function<MethodNode, InsnList> postLoad) {
         String owner = target.name;
         String name = fieldID.name();
         String desc = fieldID.desc().getDescriptor();
@@ -264,6 +267,10 @@ public class ASMUtil {
                 if (insn instanceof FieldInsnNode fieldInsn) {
                     if (fieldInsn.owner.equals(owner) && fieldInsn.name.equals(name) && fieldInsn.desc.equals(desc)) {
                         fieldInsn.desc = newType.getDescriptor();
+
+                        if(fieldInsn.getOpcode() == GETFIELD || fieldInsn.getOpcode() == GETSTATIC){
+                            method.instructions.insert(insn, postLoad.apply(method));
+                        }
                     }
                 }
             }

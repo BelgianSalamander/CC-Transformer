@@ -1,6 +1,5 @@
 package me.salamander.cctransformer.transformer.config;
 
-import me.salamander.cctransformer.transformer.analysis.AnalysisResults;
 import me.salamander.cctransformer.transformer.analysis.TransformSubtype;
 import me.salamander.cctransformer.transformer.analysis.TransformTrackingInterpreter;
 import me.salamander.cctransformer.transformer.analysis.TransformTrackingValue;
@@ -11,18 +10,19 @@ import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.analysis.Analyzer;
 
 import java.io.PrintStream;
+import java.util.List;
 import java.util.Map;
 
 public class Config {
     private final HierarchyTree hierarchy;
     private final Map<String, TransformType> types;
-    private final Map<MethodID, MethodParameterInfo> methodParameterInfo;
+    private final AncestorHashMap<MethodID, List<MethodParameterInfo>> methodParameterInfo;
     private final Map<Type, ClassTransformInfo> classes;
 
     private TransformTrackingInterpreter interpreter;
     private Analyzer<TransformTrackingValue> analyzer;
 
-    public Config(HierarchyTree hierarchy, Map<String, TransformType> transformTypeMap, AncestorHashMap<MethodID, MethodParameterInfo> parameterInfo, Map<Type, ClassTransformInfo> classes) {
+    public Config(HierarchyTree hierarchy, Map<String, TransformType> transformTypeMap, AncestorHashMap<MethodID, List<MethodParameterInfo>> parameterInfo, Map<Type, ClassTransformInfo> classes) {
         this.types = transformTypeMap;
         this.methodParameterInfo = parameterInfo;
         this.hierarchy = hierarchy;
@@ -41,8 +41,10 @@ public class Config {
 
         System.out.println("\nMethod Parameter Info:");
 
-        for(Map.Entry<MethodID, MethodParameterInfo> entry : methodParameterInfo.entrySet()){
-            out.println(entry.getValue());
+        for(Map.Entry<MethodID, List<MethodParameterInfo>> entry : methodParameterInfo.entrySet()){
+            for(MethodParameterInfo info : entry.getValue()){
+                out.println(info);
+            }
         }
     }
 
@@ -54,7 +56,7 @@ public class Config {
         return types;
     }
 
-    public Map<MethodID, MethodParameterInfo> getMethodParameterInfo() {
+    public Map<MethodID, List<MethodParameterInfo>> getMethodParameterInfo() {
         return methodParameterInfo;
     }
 

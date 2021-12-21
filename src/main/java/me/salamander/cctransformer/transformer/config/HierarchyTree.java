@@ -30,8 +30,8 @@ public class HierarchyTree {
         lookup.put(value, node);
     }
 
-    public Iterable<Type> ancestry(Type type){
-        return new AncestorIterable(lookup.get(type));
+    public Iterable<Type> ancestry(Type subType){
+        return new AncestorIterable(lookup.get(subType));
     }
 
     public void print(PrintStream out) {
@@ -56,8 +56,8 @@ public class HierarchyTree {
         return lookup.get(owner);
     }
 
-    public void addInterface(Type itf, Type type) {
-        Node node = lookup.get(type);
+    public void addInterface(Type itf, Type subType) {
+        Node node = lookup.get(subType);
         if(node == null){
             throw new IllegalStateException("Node not found");
         }
@@ -66,15 +66,15 @@ public class HierarchyTree {
 
     public void add(Class<?> clazz){
         while(true){
-            Type type = Type.getType(clazz);
-            if(lookup.containsKey(type)){
+            Type subType = Type.getType(clazz);
+            if(lookup.containsKey(subType)){
                 break;
             }
 
             Class<?> parent = clazz.getSuperclass();
             assert parent != null;
 
-            addNode(type, Type.getType(parent));
+            addNode(subType, Type.getType(parent));
             clazz = parent;
         }
     }
@@ -107,8 +107,8 @@ public class HierarchyTree {
             return depth;
         }
 
-        public void addInterface(Type type){
-            interfaces.add(type);
+        public void addInterface(Type subType){
+            interfaces.add(subType);
         }
     }
 

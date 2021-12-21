@@ -78,8 +78,8 @@ public class VariableManager {
         }
     }
 
-    public int allocate(int minIndex, int maxIndex, Type type) {
-        if(type.getSort() == Type.DOUBLE || type.getSort() == Type.LONG){
+    public int allocate(int minIndex, int maxIndex, Type subType) {
+        if(subType.getSort() == Type.DOUBLE || subType.getSort() == Type.LONG){
             return allocateDouble(minIndex, maxIndex);
         }else{
             return allocateSingle(minIndex, maxIndex);

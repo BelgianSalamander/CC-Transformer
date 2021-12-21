@@ -46,19 +46,19 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
     }
 
     @Override
-    public TransformTrackingValue newValue(Type type) {
-        if(type == null){
+    public TransformTrackingValue newValue(Type subType) {
+        if(subType == null){
             return new TransformTrackingValue(null, fieldBindings);
         }
-        if(type.getSort() == Type.VOID) return null;
-        if(type.getSort() == Type.METHOD) throw new RuntimeException("Method type not supported");
-        return new TransformTrackingValue(type, fieldBindings);
+        if(subType.getSort() == Type.VOID) return null;
+        if(subType.getSort() == Type.METHOD) throw new RuntimeException("Method subType not supported");
+        return new TransformTrackingValue(subType, fieldBindings);
     }
 
     @Override
-    public TransformTrackingValue newParameterValue(boolean isInstanceMethod, int local, Type type) {
-        if(type == Type.VOID_TYPE) return null;
-        TransformTrackingValue value = new TransformTrackingValue(type, local, fieldBindings);
+    public TransformTrackingValue newParameterValue(boolean isInstanceMethod, int local, Type subType) {
+        if(subType == Type.VOID_TYPE) return null;
+        TransformTrackingValue value = new TransformTrackingValue(subType, local, fieldBindings);
         if(parameterOverrides.containsKey(local)){
             value.setTransformType(parameterOverrides.get(local));
         }
@@ -196,7 +196,7 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
                     default:
                         break;
                 }
-                throw new AnalyzerException(insn, "Invalid array type");
+                throw new AnalyzerException(insn, "Invalid array subType");
             case ANEWARRAY:
                 return new TransformTrackingValue(Type.getType("[" + Type.getObjectType(((TypeInsnNode) insn).desc)), insn, fieldBindings);
             case ARRAYLENGTH:
@@ -328,11 +328,11 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
         if (opcode == MULTIANEWARRAY) {
             return new TransformTrackingValue(Type.getType(((MultiANewArrayInsnNode) insn).desc), insn, fieldBindings);
         } else if (opcode == INVOKEDYNAMIC) {
-            //TODO: Handle invokedynamic and type inference for call sites
+            //TODO: Handle invokedynamic and subType inference for call sites
             InvokeDynamicInsnNode node = (InvokeDynamicInsnNode) insn;
-            Type type = Type.getReturnType(node.desc);
+            Type subType = Type.getReturnType(node.desc);
 
-            TransformTrackingValue ret = new TransformTrackingValue(type, insn, fieldBindings);
+            TransformTrackingValue ret = new TransformTrackingValue(subType, insn, fieldBindings);
 
             //Make sure this is LambdaMetafactory.metafactory
             if(node.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory") && node.bsm.getName().equals("metafactory")){
@@ -355,11 +355,11 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
                     );
                 }
 
-                boolean isTransformPredicate = ret.getTransform().getSubtype() == TransformSubtype.Type.PREDICATE;
-                boolean isTransformConsumer = ret.getTransform().getSubtype() == TransformSubtype.Type.CONSUMER;
+                boolean isTransformPredicate = ret.getTransform().getSubtype() == TransformSubtype.SubType.PREDICATE;
+                boolean isTransformConsumer = ret.getTransform().getSubtype() == TransformSubtype.SubType.CONSUMER;
 
                 if(isTransformConsumer && isTransformPredicate){
-                    throw new RuntimeException("A type cannot be both a predicate and a consumer. This is a bug in the configuration ('type-transform.json').");
+                    throw new RuntimeException("A subType cannot be both a predicate and a consumer. This is a bug in the configuration ('subType-transform.json').");
                 }
 
                 if(isTransformConsumer || isTransformPredicate) {
@@ -376,12 +376,12 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
                 }
             }
 
-            if(type.getSort() == Type.VOID) return null;
+            if(subType.getSort() == Type.VOID) return null;
 
             return ret;
         } else {
             MethodInsnNode methodCall = (MethodInsnNode) insn;
-            Type type = Type.getReturnType(methodCall.desc);
+            Type subType = Type.getReturnType(methodCall.desc);
 
             MethodID methodID = new MethodID(methodCall.owner, methodCall.name, methodCall.desc, MethodID.CallType.fromOpcode(opcode));
 
@@ -393,40 +393,44 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
                 );
             }
 
-            MethodParameterInfo parameterInfo = config.getMethodParameterInfo().get(methodID);
+            List<MethodParameterInfo> possibilities = config.getMethodParameterInfo().get(methodID);
 
-            if(parameterInfo != null){
+            if(possibilities != null){
                 TransformTrackingValue returnValue = null;
-                TransformTrackingValue[] parameterValues = new TransformTrackingValue[parameterInfo.getParameterTypes().length];
-                for (int i = 0; i < values.size(); i++) {
-                    parameterValues[i] = values.get(i);
+
+                if(subType != null){
+                    returnValue = new TransformTrackingValue(subType, insn, fieldBindings);
                 }
 
-                if(type != null){
-                    returnValue = new TransformTrackingValue(type, insn, fieldBindings);
-                }
-
-                UnresolvedMethodTransform unresolvedTransform = new UnresolvedMethodTransform(parameterInfo, returnValue, parameterValues);
-
-                int checkResult = unresolvedTransform.check();
-                if(checkResult == 0) {
-                    if (returnValue != null) {
-                        returnValue.possibleTransformChecks.add(unresolvedTransform);
+                for(MethodParameterInfo info : possibilities) {
+                    TransformTrackingValue[] parameterValues = new TransformTrackingValue[info.getParameterTypes().length];
+                    for (int i = 0; i < values.size(); i++) {
+                        parameterValues[i] = values.get(i);
                     }
 
-                    for (TransformTrackingValue parameterValue : parameterValues) {
-                        parameterValue.possibleTransformChecks.add(unresolvedTransform);
+                    UnresolvedMethodTransform unresolvedTransform = new UnresolvedMethodTransform(info, returnValue, parameterValues);
+
+                    int checkResult = unresolvedTransform.check();
+                    if (checkResult == 0) {
+                        if (returnValue != null) {
+                            returnValue.possibleTransformChecks.add(unresolvedTransform);
+                        }
+
+                        for (TransformTrackingValue parameterValue : parameterValues) {
+                            parameterValue.possibleTransformChecks.add(unresolvedTransform);
+                        }
+                    } else if (checkResult == 1) {
+                        unresolvedTransform.accept();
+                        break;
                     }
-                }else if(checkResult == 1){
-                    unresolvedTransform.accept();
                 }
 
                 return returnValue;
             }
 
-            if(type.getSort() == Type.VOID) return null;
+            if(subType.getSort() == Type.VOID) return null;
 
-            return new TransformTrackingValue(type, insn, fieldBindings);
+            return new TransformTrackingValue(subType, insn, fieldBindings);
         }
     }
 
@@ -436,7 +440,7 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
             if(expected.transformedTypes().size() == 1){
                 returnValues.add(value);
             }else{
-                throw new AnalyzerException(insn, "Return type is not single");
+                throw new AnalyzerException(insn, "Return subType is not single");
             }
         }
         consumeBy(value, insn);
@@ -472,7 +476,7 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
         Type[] allTypes;
         if(!ASMUtil.isStatic(methodResults.methodNode())){
             allTypes = new Type[argumentTypes.length + 1];
-            allTypes[0] = Type.getObjectType("java/lang/Object"); //The actual type doesn't matter
+            allTypes[0] = Type.getObjectType("java/lang/Object"); //The actual subType doesn't matter
             System.arraycopy(argumentTypes, 0, allTypes, 1, argumentTypes.length);
         }else{
             allTypes = argumentTypes;

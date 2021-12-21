@@ -73,8 +73,8 @@ public class MethodID implements Ancestralizable<MethodID>{
     }
 
     @Override
-    public MethodID withType(Type type) {
-        return new MethodID(type, name, descriptor, callType);
+    public MethodID withType(Type subType) {
+        return new MethodID(subType, name, descriptor, callType);
     }
 
     @Override
