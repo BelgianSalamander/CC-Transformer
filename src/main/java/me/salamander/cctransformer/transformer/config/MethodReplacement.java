@@ -46,4 +46,12 @@ public class MethodReplacement {
     public List<Integer>[][] getParameterIndexes() {
         return parameterIndexes;
     }
+
+    public BytecodeFactory getFinalizer() {
+        return finalizer;
+    }
+
+    public List<Integer>[] getFinalizerIndices() {
+        return finalizerIndices;
+    }
 }

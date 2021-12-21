@@ -817,6 +817,17 @@ public class TypeTransformer {
                 replacementInstructions.add(replacement.getBytecodeFactories()[j].generate());
             }
 
+            //Call finalizer
+            if(replacement.getFinalizer() != null){
+                List<Integer>[] indices = replacement.getFinalizerIndices();
+                for(int j = 0; j < indices.length; j++){
+                    for(int index: indices[j]){
+                        replacementInstructions.add(paramGenerators[j][index].generate());
+                    }
+                }
+                replacementInstructions.add(replacement.getFinalizer().generate());
+            }
+
             //Step 2: Insert new code
             context.target().instructions.insert(methodCall, replacementInstructions);
             context.target().instructions.remove(methodCall);
