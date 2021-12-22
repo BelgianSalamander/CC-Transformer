@@ -16,22 +16,23 @@ public class CCTransformer {
         Config config = getConfig();
 
         //ClassNode testClass = loadClass(BlockLightEngine.class);
-        ClassNode testClass = loadClass("net.minecraft.world.level.lighting.DynamicGraphMinFixedPoint");
+        //ClassNode testClass = loadClass("net.minecraft.world.level.lighting.DynamicGraphMinFixedPoint");
+        ClassNode testClass = loadClass("net.minecraft.world.level.lighting.BlockLightEngine");
 
         //Change constructor
-        for(MethodNode method : testClass.methods) {
+        /*for(MethodNode method : testClass.methods) {
             if(method.name.equals("<init>")) {
                 method.instructions.clear();
                 method.instructions.add(dynGraphConstructor());
                 break;
             }
-        }
+        }*/
 
-        TypeTransformer typeTransformer = new TypeTransformer(config, testClass, false, true);
+        TypeTransformer typeTransformer = new TypeTransformer(config, testClass, false, false);
 
         typeTransformer.analyzeAllMethods();
 
-        typeTransformer.makeConstructor("(III)V", dynGraphConstructor());
+        //typeTransformer.makeConstructor("(III)V", dynGraphConstructor());
 
         typeTransformer.transformAllMethods();
 

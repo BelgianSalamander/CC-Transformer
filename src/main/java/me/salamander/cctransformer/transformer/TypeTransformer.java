@@ -51,8 +51,9 @@ public class TypeTransformer {
     private final AncestorHashMap<FieldID, TransformTrackingValue> fieldPseudoValues;
     //Per-class configuration
     private final ClassTransformInfo transformInfo;
-    //The field ID (owner, name, desc) of a field which stores whether an instance was created with a transform constructor and has transformed fields
-    private final FieldID isTransformedField;
+    //The field ID (owner, name, desc) of a field which stores whether an instance was created with a transformed constructor and has transformed fields
+    private FieldID isTransformedField;
+    private boolean hasTransformedFields;
     //Whether safety checks/dispatches/warnings should be inserted into the code.
     private final boolean addSafety;
     //Stores the lambdaTransformers that need to be added
@@ -102,22 +103,6 @@ public class TypeTransformer {
         }else{
             this.newClassNode = null;
             renameTo = null;
-
-            isTransformedField = new FieldID(Type.getObjectType(classNode.name), "isTransformed" + MIX, Type.BOOLEAN_TYPE);
-            classNode.fields.add(isTransformedField.toNode(false, Opcodes.ACC_FINAL));
-
-            //For every constructor already in the method, add 'isTransformed = false' to it.
-            for(MethodNode methodNode: classNode.methods){
-                if(methodNode.name.equals("<init>")){
-                    insertAtReturn(methodNode, () -> {
-                       InsnList instructions = new InsnList();
-                       instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
-                       instructions.add(new InsnNode(Opcodes.ICONST_0));
-                       instructions.add(new FieldInsnNode(Opcodes.PUTFIELD, classNode.name, isTransformedField.name(), "Z"));
-                       return instructions;
-                    });
-                }
-            }
         }
     }
 
@@ -329,7 +314,7 @@ public class TypeTransformer {
         boolean[] prev;
         Frame<TransformTrackingValue>[] frames = context.analysisResults().frames();
 
-        //This code keeps trying to find new remvoed emitters until it can't find any more.
+        //This code keeps trying to find new removed emitters until it can't find any more.
 
         do{
             //Keep detecting new ones until we don't find any more
@@ -346,6 +331,7 @@ public class TypeTransformer {
                     MethodParameterInfo info = context.methodInfos()[i];
                     if(info != null){
                         if(info.getReplacement().changeParameters()){
+                            //If any method parameters are changed we remove all of it's emitters
                             for (int j = 0; j < consumed; j++) {
                                 TransformTrackingValue arg = frame.getStack(frame.getStackSize() - consumed + j);
                                 markRemoved(arg, context);
@@ -369,6 +355,7 @@ public class TypeTransformer {
                     }
                 }
 
+                //If any of the values used by any instruction are removed we need to remove all the other values emitters
                 boolean remove = false;
                 for(int j = 0; j < consumed; j++){
                     TransformTrackingValue arg = frame.getStack(frame.getStackSize() - consumed + j);
@@ -387,6 +374,10 @@ public class TypeTransformer {
         }while(!Arrays.equals(prev, context.removedEmitter()));
     }
 
+    /**
+     * Creates the synthetic emitters mentioned in {@link #detectAllRemovedEmitters(MethodNode, TransformContext)}
+     * @param context Transform context
+     */
     private void createEmitters(TransformContext context) {
         for (int i = 0; i < context.instructions.length; i++) {
             if(context.removedEmitter()[i]){
@@ -400,6 +391,12 @@ public class TypeTransformer {
         }
     }
 
+    /**
+     * Determine if the given value's emitters are removed
+     * @param value The value to check
+     * @param context Transform context
+     * @return True if the value's emitters are removed, false otherwise
+     */
     private boolean isRemoved(TransformTrackingValue value, TransformContext context){
         boolean isAllRemoved = true;
         boolean isAllPresent = true;
@@ -420,6 +417,11 @@ public class TypeTransformer {
         return isAllRemoved;
     }
 
+    /**
+     * Marks all the emitters of the given value as removed
+     * @param value The value whose emitters to mark as removed
+     * @param context Transform context
+     */
     private void markRemoved(TransformTrackingValue value, TransformContext context){
         for(AbstractInsnNode source: value.getSource()){
             int sourceIndex = context.indexLookup().get(source);
@@ -427,6 +429,12 @@ public class TypeTransformer {
         }
     }
 
+    /**
+     * Actually modifies the method
+     * @param oldMethod The original method, may be modified for safety checks
+     * @param methodNode The method to modify
+     * @param context Transform context
+     */
     private void transformMethod(MethodNode oldMethod, MethodNode methodNode, TransformContext context) {
         //Step One: change descriptor
         TransformSubtype[] actualParameters;
@@ -443,47 +451,63 @@ public class TypeTransformer {
 
         boolean renamed = false;
 
+        //If the method's descriptor's didn't change then we  need to change the name otherwise it will throw errors
         if(newDescriptor.equals(oldMethod.desc) && newClassNode == null){
             methodNode.name += MIX;
             renamed = true;
         }
 
+        //Change variable names to make it easier to debug
         modifyVariableTable(methodNode, context);
 
+        //Change the code
         modifyCode(methodNode, context);
 
         if(renamed){
+            //If the method was renamed then we need to make sure that calls to the normal method end up calling the renamed method
             //TODO: Check if dispatch is actually necessary. This could be done by checking if the method accesses any transformed fields
 
             InsnList dispatch = new InsnList();
             LabelNode label = new LabelNode();
-            dispatch.add(new VarInsnNode(Opcodes.ALOAD, 0));
-            dispatch.add(new FieldInsnNode(Opcodes.GETFIELD, isTransformedField.owner().getInternalName(), isTransformedField.name(), isTransformedField.desc().getDescriptor()));
-            dispatch.add(new JumpInsnNode(Opcodes.IFEQ, label));
-            //Dispatch to 3int
+
+            //If not transformed then do nothing, otherwise dispatch to the renamed method
+            dispatch.add(jumpIfNotTransformed(label));
+
+            //Dispatch to transformed. Because the descriptor didn't change, we don't need to transform any parameters.
+            //TODO: This would need to actually transform parameters if say, the transform type was something like int -> (int "double_x")
+            //This part pushes all the parameters onto the stack
             dispatch.add(new VarInsnNode(Opcodes.ALOAD, 0));
             int index = 1;
             for(Type arg: Type.getArgumentTypes(newDescriptor)){
                 dispatch.add(new VarInsnNode(arg.getOpcode(Opcodes.ILOAD), index));
                 index += arg.getSize();
             }
-            dispatch.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, isTransformedField.owner().getInternalName(), methodNode.name, methodNode.desc, false));
+
+            //Call the renamed method
+            dispatch.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, classNode.name, methodNode.name, methodNode.desc, false));
+
+            //Return
             dispatch.add(new InsnNode(Type.getReturnType(methodNode.desc).getOpcode(Opcodes.IRETURN)));
+
             dispatch.add(label);
 
+            //Insert the dispatch at the start of the method
             oldMethod.instructions.insertBefore(oldMethod.instructions.getFirst(), dispatch);
         }else if(addSafety && (methodNode.access & Opcodes.ACC_SYNTHETIC) == 0){
+            //This is different to the above because it actually emits a warning. This can be disabled by setting addSafety to false in the constructor
+            //but this means that if a single piece of code calls the wrong method then everything could crash.
             InsnList dispatch = new InsnList();
             LabelNode label = new LabelNode();
-            dispatch.add(new VarInsnNode(Opcodes.ALOAD, 0));
-            dispatch.add(new FieldInsnNode(Opcodes.GETFIELD, isTransformedField.owner().getInternalName(), isTransformedField.name(), isTransformedField.desc().getDescriptor()));
-            dispatch.add(new JumpInsnNode(Opcodes.IFEQ, label));
 
+            dispatch.add(jumpIfNotTransformed(label));
+
+            //Emit warning
             dispatch.add(new LdcInsnNode(classNode.name));
             dispatch.add(new LdcInsnNode(oldMethod.name));
             dispatch.add(new LdcInsnNode(oldMethod.desc));
             dispatch.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "me/salamander/cctransformer/transformer/TypeTransformer", "emitWarning", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V", false));
 
+            //Push all the parameters onto the stack and transform them if needed
             dispatch.add(new VarInsnNode(Opcodes.ALOAD, 0));
             int index = 1;
             for(Type arg: Type.getArgumentTypes(oldMethod.desc)){
@@ -506,18 +530,27 @@ public class TypeTransformer {
         }
     }
 
+    /**
+     * Modifies the code of the method to use the transformed types instead of the original types
+     * @param methodNode The method to modify
+     * @param context The context of the transformation
+     */
     private void modifyCode(MethodNode methodNode, TransformContext context) {
         AbstractInsnNode[] instructions = context.instructions();
         Frame<TransformTrackingValue>[] frames = context.analysisResults().frames();
 
+        //Iterate through every instruction of the instructions array. We use the array because it will not change unlike methodNode.instructions
         for (int i = 0; i < instructions.length; i++) {
             if(context.removedEmitter()[i]){
+                //If we have removed the emitter, we don't need to modify the code and trying to do so would cause an error anyways
                 continue;
             }
 
             AbstractInsnNode instruction = instructions[i];
             Frame<TransformTrackingValue> frame = frames[i];
 
+            //Because of removed emitters, we have no guarantee that all the needed values will be on the stack when we need them. If this is set to false,
+            //there will be no guarantee that the values will be on the stack. If it is true, the emitters will be inserted where they are needed
             boolean ensureValuesAreOnStack = true;
 
             int opcode = instruction.getOpcode();
@@ -525,29 +558,31 @@ public class TypeTransformer {
             if(instruction instanceof MethodInsnNode methodCall){
                 MethodID methodID = MethodID.from(methodCall);
 
+                //Get the return value (if it exists). It is on the top of the stack if the next frame
                 TransformTrackingValue returnValue = null;
                 if (methodID.getDescriptor().getReturnType() != Type.VOID_TYPE) {
                     returnValue = ASMUtil.getTop(frames[i + 1]);
                 }
 
+                //Get all the values that are passed to the method call
                 int argCount = ASMUtil.argumentCount(methodID.getDescriptor().getDescriptor(), methodID.isStatic());
                 TransformTrackingValue[] args = new TransformTrackingValue[argCount];
                 for (int j = 0; j < args.length; j++) {
                     args[j] = frame.getStack(frame.getStackSize() - argCount + j);
                 }
 
+                //Find replacement information for the method call
                 MethodParameterInfo info = context.methodInfos[i];
                 if(info != null) {
 
-                    if (info.getTransformCondition().checkValidity(returnValue, args) == 1) {
-                        applyReplacement(context, instructions, frames, i, methodCall, info, args);
-                    }
+                    applyReplacement(context, instructions, frames, i, methodCall, info, args);
 
                     if(info.getReplacement().changeParameters()){
+                        //Because the replacement itself is already taking care of having all the values on the stack, we don't need to do anything, or we'll just have every value being duplicated
                         ensureValuesAreOnStack = false;
                     }
                 }else{
-                    //Default replacement
+                    //If there is none, we create a default transform
                     if(returnValue != null && returnValue.getTransform().transformedTypes(returnValue.getType()).size() > 1){
                         throw new IllegalStateException("Cannot generate default replacement for method with multiple return types '" + methodID + "'");
                     }
@@ -555,47 +590,81 @@ public class TypeTransformer {
                     applyDefaultReplacement(context, instructions, frames, i, methodCall, returnValue, args);
                 }
             }else if(instruction instanceof VarInsnNode varNode){
+                /*
+                 * There are two reasons this is needed.
+                 * 1. Some values take up different amount of variable slots because of their transforms, so we need to shift all variables accesses'
+                 * 2. When actually storing or loading a transformed value, we need to store all of it's transformed values correctly
+                 */
+
+                //Get the shifted variable index
                 int originalVarIndex = varNode.var;
                 int newVarIndex = context.varLookup()[i][originalVarIndex];
 
+                //Base opcode makes it easier to determine what kind of instruction we are dealing with
                 int baseOpcode = switch (varNode.getOpcode()){
                     case Opcodes.ALOAD, Opcodes.ILOAD, Opcodes.FLOAD, Opcodes.DLOAD, Opcodes.LLOAD -> Opcodes.ILOAD;
                     case Opcodes.ASTORE, Opcodes.ISTORE, Opcodes.FSTORE, Opcodes.DSTORE, Opcodes.LSTORE -> Opcodes.ISTORE;
                     default -> throw new IllegalStateException("Unknown opcode: " + varNode.getOpcode());
                 };
 
+                //If the variable is being loaded, it is in the current frame, if it is being stored, it will be in the next frame
                 TransformSubtype varType = context.varTypes()[i + (baseOpcode == Opcodes.ISTORE ? 1 : 0)][originalVarIndex];
-
+                //Get the actual types that need to be stored or loaded
                 List<Type> types = varType.transformedTypes(ASMUtil.getType(varNode.getOpcode()));
 
+                //Get the indices for each of these types
                 List<Integer> vars = new ArrayList<>();
                 for (Type subType : types) {
                     vars.add(newVarIndex);
                     newVarIndex += subType.getSize();
                 }
 
-                //If the variable is being stored we must reverse the order of the types
+                /*
+                 * If the variable is being stored we must reverse the order of the types.
+                 * This is because in the following code if a and b have transform-type long -> (int "x", int "y", int "z"):
+                 *
+                 * long b = a;
+                 *
+                 * The loading of a would get expanded to something like:
+                 * ILOAD 3 Stack: [] -> [a_x]
+                 * ILOAD 4 Stack: [a_x] -> [a_x, a_y]
+                 * ILOAD 5 Stack: [a_x, a_y] -> [a_x, a_y, a_z]
+                 *
+                 * If the storing into b was in the same order it would be:
+                 * ISTORE 3 Stack: [a_x, a_y, a_z] -> [a_x, a_y] (a_z gets stored into b_x)
+                 * ISTORE 4 Stack: [a_x, a_y] -> [a_x] (a_y gets stored into b_y)
+                 * ISTORE 5 Stack: [a_x] -> [] (a_x gets stored into b_z)
+                 * And so we see that this ordering is wrong.
+                 *
+                 * To fix this, we reverse the order of the types.
+                 * The previous example becomes:
+                 * ISTORE 5 Stack: [a_x, a_y, a_z] -> [a_x, a_y] (a_z gets stored into b_z)
+                 * ISTORE 4 Stack: [a_x, a_y] -> [a_x] (a_y gets stored into b_y)
+                 * ISTORE 3 Stack: [a_x] -> [] (a_x gets stored into b_x)
+                 */
                 if(baseOpcode == Opcodes.ISTORE){
                     Collections.reverse(types);
                     Collections.reverse(vars);
                 }
 
+                //For the first operation we can just modify the original instruction instead of creating more
                 varNode.var = vars.get(0);
                 varNode.setOpcode(types.get(0).getOpcode(baseOpcode));
 
                 InsnList extra = new InsnList();
 
                 for(int j = 1; j < types.size(); j++){
-                    extra.add(new VarInsnNode(types.get(j).getOpcode(baseOpcode), vars.get(j)));
+                    extra.add(new VarInsnNode(types.get(j).getOpcode(baseOpcode), vars.get(j))); //Creating the new instructions
                 }
 
                 context.target().instructions.insert(varNode, extra);
             }else if(instruction instanceof IincInsnNode iincNode){
+                //We just need to shift the index of the variable because incrementing transformed values is not supported
                 int originalVarIndex = iincNode.var;
                 int newVarIndex = context.varLookup()[i][originalVarIndex];
                 iincNode.var = newVarIndex;
             }else if(ASMUtil.isConstant(instruction)){
-                //Check if value is expanded
+                //Check if value is transformed
                 ensureValuesAreOnStack = false;
                 TransformTrackingValue value = ASMUtil.getTop(frames[i + 1]);
                 if(value.getTransformType() != null){
@@ -605,6 +674,10 @@ public class TypeTransformer {
 
                     Object constant = ASMUtil.getConstant(instruction);
 
+                    /*
+                     * Check if there is a given constant replacement for this value an example of this is where Long.MAX_VALUE is used as a marker
+                     * for an invalid position. To convert it to 3int we turn it into (Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE)
+                     */
                     BytecodeFactory[] replacement = value.getTransformType().getConstantReplacements().get(constant);
                     if(replacement == null){
                         throw new IllegalStateException("Cannot expand constant value of subType " + value.getTransformType());
@@ -616,26 +689,118 @@ public class TypeTransformer {
                     }
 
                     context.target().instructions.insert(instruction, newInstructions);
-                    context.target().instructions.remove(instruction);
+                    context.target().instructions.remove(instruction); //Remove the original instruction
                 }
-            }else if(opcode == Opcodes.IF_ACMPEQ || opcode == Opcodes.IF_ACMPNE || opcode == Opcodes.IF_ICMPEQ || opcode == Opcodes.IF_ICMPNE) {
+            }else if(
+                    opcode == Opcodes.IF_ACMPEQ || opcode == Opcodes.IF_ACMPNE || opcode == Opcodes.IF_ICMPEQ || opcode == Opcodes.IF_ICMPNE ||
+                    opcode == Opcodes.LCMP || opcode == Opcodes.FCMPL || opcode == Opcodes.FCMPG || opcode == Opcodes.DCMPL || opcode == Opcodes.DCMPG
+            ) {
+                /*
+                 * Transforms for equality comparisons
+                 * How it works:
+                 *
+                 * If these values have transform-type long -> (int "x", int "y", int "z")
+                 *
+                 * LLOAD 1
+                 * LLOAD 2
+                 * LCMP
+                 * IF_EQ -> LABEL
+                 * ...
+                 * LABEL:
+                 * ...
+                 *
+                 * Becomes
+                 *
+                 * ILOAD 1
+                 * ILOAD 4
+                 * IF_ICMPNE -> FAILURE
+                 * ILOAD 2
+                 * ILOAD 5
+                 * IF_ICMPNE -> FAILURE
+                 * ILOAD 3
+                 * ILOAD 6
+                 * IF_ICMPEQ -> SUCCESS
+                 * FAILURE:
+                 * ...
+                 * SUCCESS:
+                 * ...
+                 *
+                 * Similarly
+                 * LLOAD 1
+                 * LLOAD 2
+                 * LCMP
+                 * IF_NE -> LABEL
+                 * ...
+                 * LABEL:
+                 * ...
+                 *
+                 * Becomes
+                 *
+                 * ILOAD 1
+                 * ILOAD 4
+                 * IF_ICMPNE -> SUCCESS
+                 * ILOAD 2
+                 * ILOAD 5
+                 * IF_ICMPNE -> SUCCESS
+                 * ILOAD 3
+                 * ILOAD 6
+                 * IF_ICMPNE -> SUCCESS
+                 * FAILURE:
+                 * ...
+                 * SUCCESS:
+                 * ...
+                 */
+
+                //Get the actual values that are being compared
                 TransformTrackingValue left = frame.getStack(frame.getStackSize() - 2);
                 TransformTrackingValue right = frame.getStack(frame.getStackSize() - 1);
 
-                int baseOpcode = switch (opcode){
-                    case Opcodes.IF_ACMPEQ, Opcodes.IF_ICMPEQ -> Opcodes.IF_ICMPEQ;
-                    case Opcodes.IF_ACMPNE, Opcodes.IF_ICMPNE -> Opcodes.IF_ICMPNE;
-                    default -> throw new IllegalStateException("Unknown opcode: " + opcode);
-                };
+                JumpInsnNode jump; //The actual jump instruction. Note: LCMP, FCMPL, FCMPG, DCMPL, DCMPG are not jump, instead, the next instruction (IFEQ, IFNE etc..) is jump
+                int baseOpcode; //The type of comparison. IF_IMCPEQ or IF_ICMPNE
 
-                JumpInsnNode jump = context.getActual((JumpInsnNode) instruction);
+                //Used to remember to delete CMP instructions
+                boolean separated = false;
 
+                if(opcode == Opcodes.LCMP || opcode == Opcodes.FCMPL || opcode == Opcodes.FCMPG || opcode == Opcodes.DCMPL || opcode == Opcodes.DCMPG){
+                    TransformTrackingValue result = ASMUtil.getTop(frames[i + 1]); //The result is on the top of the next frame and gets consumer by the jump. This is how we find the jump
+
+                    if(result.getConsumers().size() != 1){
+                        throw new IllegalStateException("Expected one consumer, found " + result.getConsumers().size());
+                    }
+
+                    //Because the consumers are from the old method we have to call context.getActual
+                    jump = context.getActual((JumpInsnNode) result.getConsumers().iterator().next());
+
+                    baseOpcode = switch (jump.getOpcode()){
+                        case Opcodes.IFEQ -> Opcodes.IF_ICMPEQ;
+                        case Opcodes.IFNE -> Opcodes.IF_ICMPNE;
+                        default -> throw new IllegalStateException("Unknown opcode: " + jump.getOpcode());
+                    };
+
+                    separated = true;
+                }else{
+                    jump = context.getActual((JumpInsnNode) instruction); //The instruction is the jump
+
+                    baseOpcode = switch (opcode){
+                        case Opcodes.IF_ACMPEQ, Opcodes.IF_ICMPEQ -> Opcodes.IF_ICMPEQ;
+                        case Opcodes.IF_ACMPNE, Opcodes.IF_ICMPNE -> Opcodes.IF_ICMPNE;
+                        default -> throw new IllegalStateException("Unknown opcode: " + opcode);
+                    };
+                }
+
+                if(!left.getTransform().equals(right.getTransform())){
+                    throw new IllegalStateException("Expected same transform, found " + left.getTransform() + " and " + right.getTransform());
+                }
+
+                //Only modify the jump if both values are transformed
                 if(left.getTransformType() != null && right.getTransformType() != null){
                     ensureValuesAreOnStack = false;
-                    List<Type> types = left.transformedTypes();
+                    List<Type> types = left.transformedTypes(); //Get the actual types that will be converted
 
                     if(types.size() == 1){
-                        jump.setOpcode(types.get(0).getOpcode(baseOpcode));
+                        InsnList replacement = ASMUtil.generateCompareAndJump(types.get(0), baseOpcode, jump.label);
+                        context.target.instructions.insert(jump, replacement);
+                        context.target.instructions.remove(jump); //Remove the previous jump instruction
                     }else{
                         BytecodeFactory[] replacementLeft = context.syntheticEmitters()[context.indexLookup().get(left.getSource().iterator().next())];
                         BytecodeFactory[] replacementRight = context.syntheticEmitters()[context.indexLookup().get(right.getSource().iterator().next())];
@@ -650,98 +815,28 @@ public class TypeTransformer {
                             newCmp.add(replacementLeft[j].generate());
                             newCmp.add(replacementRight[j].generate());
 
-                            if(baseOpcode == Opcodes.IF_ICMPEQ){
-                                if(j == types.size() - 1){
-                                    newCmp.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, success));
-                                }else {
-                                    newCmp.add(new JumpInsnNode(subType.getOpcode(Opcodes.IF_ICMPNE), failure));
-                                }
-                            }else{
-                                newCmp.add(new JumpInsnNode(subType.getOpcode(Opcodes.IF_ICMPNE), success));
+                            int op = Opcodes.IF_ICMPNE;
+                            LabelNode labelNode = success;
+
+                            if(j == types.size() - 1 && baseOpcode == Opcodes.IF_ICMPEQ){
+                                op = Opcodes.IF_ICMPEQ;
                             }
+
+                            if(j != types.size() - 1 && baseOpcode == Opcodes.IF_ICMPEQ){
+                                labelNode = failure;
+                            }
+
+                            newCmp.add(ASMUtil.generateCompareAndJump(subType, op, labelNode));
                         }
 
                         newCmp.add(failure);
 
                         context.target().instructions.insertBefore(jump, newCmp);
                         context.target().instructions.remove(jump);
-                    }
-                }
-            }else if(opcode == Opcodes.LCMP || opcode == Opcodes.FCMPL || opcode == Opcodes.FCMPG || opcode == Opcodes.DCMPL || opcode == Opcodes.DCMPG){
-                TransformTrackingValue left = frame.getStack(frame.getStackSize() - 2);
-                TransformTrackingValue right = frame.getStack(frame.getStackSize() - 1);
 
-                TransformTrackingValue result = ASMUtil.getTop(frames[i + 1]);
-
-                if(result.getConsumers().size() != 1){
-                    throw new IllegalStateException("Expected one consumer, found " + result.getConsumers().size());
-                }
-
-
-                if(left.getTransformType() != null && right.getTransformType() != null){
-                    ensureValuesAreOnStack = false;
-                    JumpInsnNode jump = context.getActual((JumpInsnNode) result.getConsumers().iterator().next());
-
-                    int baseOpcode = switch (jump.getOpcode()){
-                        case Opcodes.IFEQ -> Opcodes.IF_ICMPEQ;
-                        case Opcodes.IFNE -> Opcodes.IF_ICMPNE;
-                        default -> throw new IllegalStateException("Unknown opcode: " + jump.getOpcode());
-                    };
-
-                    List<Type> types = left.transformedTypes();
-
-                    if(types.size() == 1){
-                        Type subType = types.get(0);
-                        if(subType.getSort() == Type.INT || subType.getSort() == Type.OBJECT){
-                            jump.setOpcode(subType.getOpcode(baseOpcode));
-                            context.target().instructions.remove(instruction);
-                        }else{
-                            AbstractInsnNode newOp = new InsnNode(subType.getOpcode(baseOpcode));
-                            context.target().instructions.insertBefore(instruction, newOp);
-                            context.target().instructions.remove(instruction);
+                        if(separated){
+                            context.target().instructions.remove(instruction); //Remove the CMP instruction
                         }
-                    }else{
-                        BytecodeFactory[] replacementLeft = context.syntheticEmitters()[context.indexLookup().get(left.getSource().iterator().next())];
-                        BytecodeFactory[] replacementRight = context.syntheticEmitters()[context.indexLookup().get(right.getSource().iterator().next())];
-
-                        LabelNode success = jump.label;
-                        LabelNode failure = new LabelNode();
-
-                        InsnList newCmp = new InsnList();
-                        for(int j = 0; j < types.size(); j++){
-                            Type subType = types.get(j);
-                            newCmp.add(replacementLeft[j].generate());
-                            newCmp.add(replacementRight[j].generate());
-
-                            if(subType.getSort() == Type.INT || subType.getSort() == Type.OBJECT){
-                                if(baseOpcode == Opcodes.IF_ICMPEQ){
-                                    if(j == types.size() - 1) {
-                                        newCmp.add(new JumpInsnNode(subType.getOpcode(Opcodes.IF_ICMPEQ), success));
-                                    }else{
-                                        newCmp.add(new JumpInsnNode(subType.getOpcode(Opcodes.IF_ICMPNE), failure));
-                                    }
-                                }else{
-                                    newCmp.add(new JumpInsnNode(subType.getOpcode(Opcodes.IF_ICMPNE), success));
-                                }
-                            }else{
-                                newCmp.add(new InsnNode(ASMUtil.getCompare(subType)));
-                                if(baseOpcode == Opcodes.IF_ICMPEQ){
-                                    if(j == types.size() - 1) {
-                                        newCmp.add(new JumpInsnNode(Opcodes.IFEQ, success));
-                                    }else{
-                                        newCmp.add(new JumpInsnNode(Opcodes.IFNE, failure));
-                                    }
-                                }else{
-                                    newCmp.add(new JumpInsnNode(Opcodes.IFNE, success));
-                                }
-                            }
-                        }
-
-                        newCmp.add(failure);
-
-                        context.target().instructions.insertBefore(instruction, newCmp);
-                        context.target().instructions.remove(instruction);
-                        context.target().instructions.remove(jump);
                     }
                 }
             }else if(instruction instanceof InvokeDynamicInsnNode dynamicInsnNode){
@@ -792,7 +887,9 @@ public class TypeTransformer {
             }else if(opcode == Opcodes.NEW){
                 TransformTrackingValue value = ASMUtil.getTop(frames[i + 1]);
                 TypeInsnNode newInsn = (TypeInsnNode) instruction;
-                newInsn.desc = value.getTransform().getSingleType().getInternalName();
+                if(value.getTransform().getTransformType() != null) {
+                    newInsn.desc = value.getTransform().getSingleType().getInternalName();
+                }
             }
 
             if(ensureValuesAreOnStack){
@@ -1106,6 +1203,10 @@ public class TypeTransformer {
                 throw new IllegalStateException("Cannot analyze/transform native methods");
             }
 
+            if(methodNode.name.equals("<init>") || methodNode.name.equals("<clinit>")){
+                continue;
+            }
+
             if((methodNode.access & Opcodes.ACC_ABSTRACT) != 0){
                 //We still want to infer their argument types
                 Type[] args = Type.getArgumentTypes(methodNode.desc);
@@ -1206,9 +1307,42 @@ public class TypeTransformer {
                     continue;
                 }
 
+                hasTransformedFields = true;
+
                 TransformSubtype transformType = entry.getValue().getTransform();
                 FieldID fieldID = entry.getKey();
                 ASMUtil.changeFieldType(newClassNode, fieldID, transformType.getSingleType(), (m) -> new InsnList());
+            }
+        }else{
+            //Still check for transformed fields
+            for(var entry: fieldPseudoValues.entrySet()){
+                if(entry.getValue().getTransformType() != null){
+                    hasTransformedFields = true;
+                    break;
+                }
+            }
+        }
+
+        //Add safety field if necessary
+        if(hasTransformedFields){
+            addSafetyField();
+        }
+    }
+
+    private void addSafetyField() {
+        isTransformedField = new FieldID(Type.getObjectType(classNode.name), "isTransformed" + MIX, Type.BOOLEAN_TYPE);
+        classNode.fields.add(isTransformedField.toNode(false, Opcodes.ACC_FINAL));
+
+        //For every constructor already in the method, add 'isTransformed = false' to it.
+        for(MethodNode methodNode: classNode.methods){
+            if(methodNode.name.equals("<init>")){
+                insertAtReturn(methodNode, () -> {
+                    InsnList instructions = new InsnList();
+                    instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                    instructions.add(new InsnNode(Opcodes.ICONST_0));
+                    instructions.add(new FieldInsnNode(Opcodes.PUTFIELD, classNode.name, isTransformedField.name(), "Z"));
+                    return instructions;
+                });
             }
         }
     }
@@ -1278,6 +1412,18 @@ public class TypeTransformer {
         }
     }
 
+    private InsnList jumpIfNotTransformed(LabelNode label){
+        InsnList instructions = new InsnList();
+        if(hasTransformedFields){
+            instructions.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            instructions.add(new FieldInsnNode(Opcodes.GETFIELD, isTransformedField.owner().getInternalName(), isTransformedField.name(), isTransformedField.desc().getDescriptor()));
+            instructions.add(new JumpInsnNode(Opcodes.IFEQ, label));
+        }
+
+        //If there are no transformed fields then it is fine to execute 3int code.
+        return instructions;
+    }
+
     public AnalysisResults analyzeMethod(MethodNode methodNode){
         long startTime = System.currentTimeMillis();
         config.getInterpreter().reset();
@@ -1326,7 +1472,7 @@ public class TypeTransformer {
             System.out.println("Analyzed method " + methodID + " in " + (System.currentTimeMillis() - startTime) + "ms");
             return results;
         }catch (AnalyzerException e){
-            throw new RuntimeException("Analysis failed", e);
+            throw new RuntimeException("Analysis failed for method " + methodNode.name, e);
         }
     }
 

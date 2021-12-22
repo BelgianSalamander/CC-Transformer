@@ -285,4 +285,28 @@ public class ASMUtil {
             return 0;
         }
     }
+
+    /**
+     * Creates a series of instructions which compares two values and jumps if a criterion is met.
+     * @param type The types that are being compared.
+     * @param opcode Either {@link Opcodes#IF_ICMPEQ} or {@link Opcodes#IF_ICMPNE}. If it is the first, it will jump if the two values are equal. If it is the second, it will jump if the two values are not equal.
+     * @param label The label to jump to if the criterion is met.
+     * @return The instructions. This assumes that the two values are on the stack.
+     */
+    public static InsnList generateCompareAndJump(Type type, int opcode, LabelNode label){
+        InsnList list = new InsnList();
+        if(type.getSort() == Type.OBJECT){
+            list.add(new JumpInsnNode(type.getOpcode(opcode), label)); //IF_ACMPEQ or IF_ACMPNE
+        }else if(type == Type.INT_TYPE){
+            list.add(new JumpInsnNode(opcode, label)); //IF_ICMPEQ or IF_ICMPNE
+        }else{
+            list.add(new InsnNode(getCompare(type)));
+            if(opcode == IF_ICMPEQ){
+                list.add(new JumpInsnNode(IFEQ, label));
+            }else{
+                list.add(new JumpInsnNode(IFNE, label));
+            }
+        }
+        return list;
+    }
 }
