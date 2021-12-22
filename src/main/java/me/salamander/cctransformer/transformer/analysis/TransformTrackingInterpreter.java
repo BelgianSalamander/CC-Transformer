@@ -41,10 +41,6 @@ public class TransformTrackingInterpreter extends Interpreter<TransformTrackingV
         parameterOverrides.clear();
     }
 
-    public boolean checkAndCleanUp(){
-        return true;
-    }
-
     @Override
     public TransformTrackingValue newValue(Type subType) {
         if(subType == null){
